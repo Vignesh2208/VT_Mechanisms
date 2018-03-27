@@ -211,9 +211,9 @@ def main():
 
     print "RUNNING EXPERIMENT FOR 5 secs ..."
 
-    if ENABLE_TIMEKEEPER == 0 :
-        while 1 :
-            sleep(5)
+    #if ENABLE_TIMEKEEPER == 0 :
+    while 1 :
+        sleep(5)
     print "STOPPING EXPERIMENT ..."
     net.stop()
 
