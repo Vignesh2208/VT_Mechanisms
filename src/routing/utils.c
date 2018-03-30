@@ -14,14 +14,14 @@ extern int str_hash(char * s);
 
 #ifdef APP_VT
 
-int RECVFROM_US = 1000;
-int RAWSOCKET_US = 1000;
-int SETPROMISC_US = 1000;
-int INTF_NAME_TO_SOCK_IDX_US = 1000;
-int GET_DST_SOCK_IDX_US = 1000;
-int SEND_PACKET_US = 1000;
-int SELECT_US = 1000;
-int FLUSH_BUFFER_US = 1000;
+int RECVFROM_US = 50;
+int RAWSOCKET_US = 50;
+int SETPROMISC_US = 50;
+int INTF_NAME_TO_SOCK_IDX_US = 50;
+int GET_DST_SOCK_IDX_US = 50;
+int SEND_PACKET_US = 50;
+int SELECT_US = 50;
+int FLUSH_BUFFER_US = 50;
 
 extern hashmap func_times_us;
 #endif
@@ -56,7 +56,7 @@ int  pipe_read(int *fd) {
   flush_buffer(buf, BUFSIZE);
   read(fd[0], buf, BUFSIZE);
 
-  return str_to_i(buf);
+  return atoi(buf);
 }
 
 
@@ -64,6 +64,7 @@ int str_to_i(char *s)
 {
         int i,n;
         n = 0;
+
         for(i = 0; *(s+i) >= '0' && *(s+i) <= '9'; i++)
                 n = 10*n + *(s+i) - '0';
         return n;
@@ -243,6 +244,7 @@ void do_debug(char *msg, ...){
 	va_end(argp);
   #endif
 
+  fflush(stdout);
 
 }
 
@@ -458,7 +460,6 @@ int send_packet(char * pkt, int size,  int sock, char * intf_name){
     return SUCCESS;
   }*/
   
-  //struct iphdr *iph = (struct iphdr *)pkt;
 
   /* Get the index of the interface to send on */
   memset(&if_idx, 0, sizeof(struct ifreq));
@@ -524,20 +525,6 @@ int send_packet(char * pkt, int size,  int sock, char * intf_name){
 
   do_debug("Sending to : %x:%x:%x:%x:%x:%x\n", eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], eth->h_dest[3], eth->h_dest[4], eth->h_dest[5] );
 
-  /*
-  struct iphdr *iph = (struct iphdr *)(pkt  + sizeof(struct ethhdr) );
-
-  sin.sin_addr.s_addr = iph->saddr;
-  din.sin_addr.s_addr = iph->daddr;
-
-  
-  if(sendto(sock, pkt, size, 0, (struct sockaddr *)&din, sizeof(din)) < 0){
-    do_debug("sendto error !\n");
-  }
-  else{
-    do_debug("THREAD. Send to success\n");
-  }
-  */
 
   if (sendto(sock, sendBuf, size, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
       perror("THREAD. Send to failed!\n");
@@ -610,174 +597,6 @@ void finish_thread(int *socks, int n_intfs){
   pthread_exit(NULL);
 }
 
-void interface_thread(void * args){
-
-  thread_args * arg = (thread_args *) args;
-  if(!arg){
-    do_debug("THREAD did not get any argument\n");
-    pthread_exit(NULL);
-  }
-
-  int thread_no = arg->thread_no;
-  char * bind_intf = arg->bind_if;
-  int n_intfs = arg->n_intfs;
-
-  do_debug("THREAD: %d. Starting ..\n", thread_no);
-
-  int sock = rawSocket(thread_no, bind_intf);
-  int socks[N_MAX_TAPS];
-  int maxfd = sock + 1;
-  int ret = 0;
-  struct sockaddr rcvaddr;
-  int len;
-  int i  = 0;
-  char buf[BUFSIZE];
-  int dst_sock_idx;
-  int dst_sock ;
-  int exp_run_time_us = 100000;
-  int exp_curr_round_time_us = 0;
-  int total_exec_time = 0;
-  struct pollfd poll_set[1];
-  int data_size;
-
-  poll_set[0].fd = sock;
-  poll_set[0].events = POLLIN;
-
-  setPromisc(thread_no, bind_intf, &sock);
-
-  for(i = 0; i < n_intfs; i++){
-    if(strcmp(bind_intf, arg->intf_names[i]) == 0){
-      socks[i] = sock;
-    }
-    else{
-      socks[i] = rawSocket(thread_no, arg->intf_names[i]);
-    }
-
-  }
-
-
-  do_debug("Thread: %d. Opened all sockets. Active interfaces:\n", thread_no);
-
-  for(i = 0; i < n_intfs; i++){
-    do_debug("-> %s\n", arg->intf_names[i]);
-  }
-
-  fd_set rd_set;
-
-  #ifdef APP_VT
-    if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, NULL) < 0){
-        finish_thread(socks, n_intfs);
-    }
-  #endif
-
-  while(1) {
-
-    if(arg->stop){
-      finish_thread(socks, n_intfs);
-    }
-
-
-    FD_ZERO(&rd_set);
-    FD_SET(sock, &rd_set); 
-
-    flush_buffer(buf,BUFSIZE);
-
-    //ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-    ret = poll(poll_set, 1, 0);
-
-    #ifdef APP_VT
-    if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "poll" ) < 0 || arg->stop){
-        finish_thread(socks, n_intfs);
-    }
-    #endif
-
-    if (ret < 0 && errno == EINTR){
-      continue;
-    }
-
-    if (ret < 0) {
-      perror("poll()");
-      pthread_exit(NULL);
-    }
-
-    if(poll_set[0].revents & POLLIN && poll_set[0].fd == sock) {
-
-      //non blocking. no need to notify main thread through pipe.      
-      data_size = recvfrom(sock,buf,sizeof(buf),0,(struct sockaddr*)&rcvaddr,&len);
-      // no need to block on pipe afer this return.
-
-      #ifdef APP_VT
-      if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "recvfrom") < 0 || arg->stop){
-          finish_thread(socks, n_intfs);
-      }
-      #endif
-
-    }
-    else{
-      do_debug("THREAD: %d. Need to Block\n");
-
-      /*#ifdef APP_VT
-      if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "recvfrom") < 0 || arg->stop){
-          finish_thread(socks, n_intfs);
-      }
-      #endif
-      */
-
-      
-
-        #ifdef APP_VT
-        //blocking recvfrom. need to notify main thread about going to block through pipe.
-        arg->is_blocked = 1;
-        exp_curr_round_time_us = 0;
-        pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
-        #endif
-
-        data_size = recvfrom(sock,buf,sizeof(buf),0,(struct sockaddr*)&rcvaddr,&len);
-        //need to block on pipe afer this return.
-
-        #ifdef APP_VT
-        //blocking recvfrom. need to notify main thread about going to block through pipe.
-        arg->is_blocked = 0;
-        exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread);
-        if(exp_curr_round_time_us <= 0 || arg->stop)
-            finish_thread(socks, n_intfs);
-        #endif
-      
-        
-    }
-
-
-
-    if(data_size > 0){
-      dst_sock_idx = get_dst_sock_idx(buf, arg->n_intfs, arg->intf_names);
-
-      //ProcessPacket(buf, data_size);
-
-
-      #ifdef APP_VT
-      if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "get_dst_sock_idx") < 0 || arg->stop){
-            finish_thread(socks, n_intfs);
-        }
-      #endif
-
-      if(dst_sock_idx != -1){
-        dst_sock = socks[dst_sock_idx];
-        send_packet(buf, data_size, dst_sock, arg->intf_names[dst_sock_idx]);
-
-        #ifdef APP_VT
-        if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "send_packet") < 0 || arg->stop){
-              finish_thread(socks, n_intfs);
-        }
-        #endif
-      }
-
-    }
-
-
-  }
-}
-
-
 
 void process_thread(void * args){
 
@@ -793,11 +612,11 @@ void process_thread(void * args){
 
   do_debug("THREAD: %d. Starting ..\n", thread_no);
 
-
+  int sock;
   int socks[N_MAX_TAPS];
   int maxfd = -1;
   int ret = 0;
-  struct sockaddr rcvaddr;
+  struct sockaddr_in rcvaddr;
   int len;
   int i  = 0;
   char buf[BUFSIZE];
@@ -823,7 +642,7 @@ void process_thread(void * args){
 
   for(i = 0; i < n_intfs; i++){
       socks[i] = rawSocket(thread_no, arg->intf_names[i]);
-      setPromisc(thread_no, arg->intf_names[i], &socks[i]);
+      //setPromisc(thread_no, arg->intf_names[i], &socks[i]);
       poll_set[i].fd = socks[i];
       poll_set[i].events = POLLIN;
   }
@@ -846,6 +665,15 @@ void process_thread(void * args){
   #endif
 
   while(1) {
+
+
+    repeat:
+      for(i = 0; i < n_intfs; i++){
+    
+        //do_debug("Sock[%d] = %d\n", i, socks[i]);
+        poll_set[i].fd = socks[i];
+        poll_set[i].events = POLLIN;
+      }
 
     if(arg->stop){
       free(poll_set);
@@ -872,9 +700,14 @@ void process_thread(void * args){
       pthread_exit(NULL);
     }
 
+
+    skip:
     runnable = 0;
+    len = sizeof(rcvaddr);
     for(i = 0; i < n_intfs; i++){
-      if(poll_set[i].revents & POLLIN && poll_set[i].fd == socks[i]) {
+
+      sock = socks[i];
+      if((poll_set[i].revents & POLLIN )&& (poll_set[i].fd == sock)) {
         runnable = 1;
 
         flush_buffer(buf,BUFSIZE);
@@ -887,7 +720,7 @@ void process_thread(void * args){
         #endif
 
         //non blocking. no need to notify main thread through pipe.      
-        data_size = recvfrom(socks[i],buf,sizeof(buf),0,(struct sockaddr*)&rcvaddr,&len);
+        data_size = recvfrom(sock,buf,BUFSIZE,0,(struct sockaddr*)&rcvaddr,&len);
         // no need to block on pipe afer this return.
 
         #ifdef APP_VT
@@ -920,6 +753,9 @@ void process_thread(void * args){
               }
               #endif
             }
+            else{
+              goto repeat;
+            }
         }
 
       }
@@ -929,8 +765,15 @@ void process_thread(void * args){
 
     if(runnable == 0){
         // going to block indefinitely
-        ret = 0;
-        do_debug("THREAD: %d. Need to Block\n");
+      
+        do_debug("THREAD: %d. Need to Block\n", thread_no);
+
+        for(i = 0; i < n_intfs; i++){
+          //do_debug("Sock[%d] = %d\n", i, socks[i]);
+          poll_set[i].fd = socks[i];
+          poll_set[i].events = POLLIN;
+        }
+
 
         #ifdef APP_VT
         //blocking recvfrom. need to notify main thread about going to block through pipe.
@@ -939,15 +782,28 @@ void process_thread(void * args){
         pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
         #endif
 
-        while(ret == 0){
+        while(1){
           ret = poll(poll_set, n_intfs, -1);
           
-          if(ret < 0){
+          if(ret < 0 && errno == EINTR)
+            continue;
+          else if(ret < 0){
               perror("poll()");
               pthread_exit(NULL);
           }
+          
+          runnable = 0;
+          for(i = 0; i < n_intfs; i++){
+            if((poll_set[i].revents & POLLIN )){
+                runnable = 1;
+            }
+          }
+
+          if(runnable == 1)
+            break;
         
         }
+
 
         #ifdef APP_VT
         //blocking recvfrom. need to notify main thread about resume after blocking
@@ -958,7 +814,8 @@ void process_thread(void * args){
           finish_thread(socks, n_intfs);
         }
         #endif
-      
+        do_debug("THREAD: %d. Blocked poll resumed\n", thread_no);
+        goto skip;
 
     }
 

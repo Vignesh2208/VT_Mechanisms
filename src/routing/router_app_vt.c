@@ -21,6 +21,14 @@ extern void init_func_times(void);
 
 
 
+//From TK. Returns -1 if experiment has to be stopped.
+int get_time_to_advance(){
+
+	int per_round_advance = 100; 
+	return per_round_advance;
+
+}
+
 /**************************************************************************
  * usage: prints usage and exits.                                         *
  **************************************************************************/
@@ -56,7 +64,7 @@ int main(int argc, char *argv[]) {
 	char routing_file_path[100];
 	thread_args args;
 	int j  = 0;
-	int per_round_advance = 10000;
+	int per_round_advance = 100; //100_us
 	int runnable = 0;
 	int n_intfs_orig;
 
@@ -132,6 +140,7 @@ int main(int argc, char *argv[]) {
 	}
 
 
+	i = 0;
 	llist_init(&routing_list);
 	populate_routing_list(routing_file_path);
 	#ifdef APP_VT
@@ -141,17 +150,17 @@ int main(int argc, char *argv[]) {
 	do_debug("Function times initialized !\n");
 
   
-	args.thread_no = i;
+	args.thread_no = 0;
 	args.is_blocked = 0;
 	args.stop = 0;
 
-	strcpy(args.bind_if, intf_names[i]);
+	strcpy(args.bind_if, intf_names[0]);
 	do_debug("Starting Thread: %d\n", args.thread_no);
 
 	args.intf_names = intf_names;
 	args.n_intfs = n_intfs;
 
-	do_debug("Starting Thread: %d. Opening pipes\n", i);
+	do_debug("Starting Thread: %d. Opening pipes\n",0);
 	#ifdef APP_VT
 	open_pipe(args.fds_main_to_thread);
 	open_pipe(args.fds_thread_to_main);
@@ -165,32 +174,37 @@ int main(int argc, char *argv[]) {
 	#ifdef APP_VT
 	while(1){
 
-		if(time_elapsed > 1000000){
-			// 100ms
+
+
+		per_round_advance = get_time_to_advance();
+		if(per_round_advance == -1){
+			// STOPPING EXPERIMENT
 			args.stop = 1;
-			do_debug("MAIN: Instructing Thread: %d to Stop. Time elapsed = %d\n", i, time_elapsed);
+			do_debug("MAIN: Instructing Thread: %d to Stop. Time elapsed = %d\n", i , time_elapsed);
 			pipe_send(args.fds_main_to_thread, THREAD_EXITING);
 			break;
 		}
 		else{
+
 		  	if(!args.is_blocked){
 			  	do_debug("MAIN: Instructing Thread: %d to run for 10ms. Time elapsed = %d\n", i, time_elapsed);
 			  	pipe_send(args.fds_main_to_thread, per_round_advance);
 			  	ret = pipe_read(args.fds_thread_to_main);
-
 			  	if(ret == THREAD_BLOCKED){
-			  		time_elapsed += per_round_advance;
+			  		do_debug("MAIN: Detected thread block\n");
+			  		time_elapsed = time_elapsed + per_round_advance;
 			  	}
 			  	else if(ret >= 0){
-			  		time_elapsed += ret + per_round_advance;
+			  		do_debug("MAIN: Return = %d\n", ret);
+			  		time_elapsed = time_elapsed + ret + per_round_advance;
 			  	}
 
 		  	}
 		  	else{
 		  		// if still blocked
-		  		do_debug("MAIN. Thread: %d. Still Blocked\n", i);
-		  		//time_elapsed[i] += per_round_advance;
-		  		usleep(1000000);
+		  		//do_debug("MAIN. Thread: %d. Still Blocked\n", i);
+		  		//time_elapsed += per_round_advance;
+		  		usleep(per_round_advance);
 		  	}
 		}
 
