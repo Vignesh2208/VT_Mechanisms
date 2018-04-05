@@ -26,6 +26,15 @@
 #include "hashmap.h"
 #include "TimeKeeper_functions.h"
 
+#include <sys/ioctl.h>
+#define _GNU_SOURCE
+#include <sched.h>
+
+#define TK_IOC_MAGIC  'k'
+
+#define TK_IO_GET_STATS _IOW(TK_IOC_MAGIC,  1, int)
+#define TK_IO_WRITE_RESULTS _IOW(TK_IOC_MAGIC,  2, int)
+
 #define BUF_SIZE 20000
 #define DEBUG
 #define IP_ADDR_SIZE 100
@@ -471,6 +480,73 @@ void write_results(int fp, int advance_err){
   }
 }
 
+int create_spinner_task(pid_t * child_pid) {
+
+  pid_t child;
+
+  child = fork();
+  if (child == (pid_t)-1) {
+      do_debug("fork() failed in create_spinner_task: %s.\n", strerror(errno));
+      exit(-1);
+  }
+
+  if (!child) {
+      execvp("/bin/x64_synchronizer", NULL);
+      exit(2);
+  }
+    
+  *child_pid = child;
+
+  return 0;
+
+
+}
+
+int ack_and_get_next_command(int fp, int advance_err){
+
+
+  do_debug("Writing results back \n");
+  char nxt_cmd[MAX_BUF_SIZ];
+  char * ptr;
+  int ret = 0;
+  flush_buffer(nxt_cmd,MAX_BUF_SIZ);
+  sprintf(nxt_cmd, "%c,%d,", TRACER_RESULTS,advance_err);
+  int per_round_advance = 100;
+  int tail_ptr = 0;
+  pid_t new_cmd_pid = 0;
+  u32 n_insns;
+  int read_ret = -1;
+
+  ret = ioctl(fp,TK_IO_WRITE_RESULTS, nxt_cmd);
+  if(ret == 0){
+
+    do_debug("Received Command: %s\n", nxt_cmd);
+    while(tail_ptr != -1){
+      tail_ptr = get_next_command_tuple(nxt_cmd, tail_ptr, &new_cmd_pid, &n_insns);
+
+      if(tail_ptr == -1 && new_cmd_pid == -1){
+        do_debug("STOP command received. Stopping...\n");
+        return -1;
+      }
+
+      do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
+
+      if(new_cmd_pid == 0)
+        break;
+
+      per_round_advance = (int) n_insns/1000;
+      do_debug("Advancing by: %d, n_insns = %d\n", per_round_advance, n_insns);
+
+      
+    }
+  }
+  
+
+  if(per_round_advance < 0)
+    return 100;
+  return per_round_advance;
+}
+
 /***
   END
 ***/
@@ -529,18 +605,24 @@ int main(int argc, char * argv[]){
   
   do_debug("Started all threads\n");
 
-  addToExp(REL_CPU_SPEED, N_ROUND_INSNS);
-    int fp = open("/proc/status", O_RDWR);
+  
+  //addToExp(REL_CPU_SPEED, N_ROUND_INSNS);
+  pid_t spinned_pid;
+  create_spinner_task(&spinned_pid);
+  addToExp_sp(REL_CPU_SPEED, N_ROUND_INSNS, spinned_pid);
+
+  int fp = open("/proc/status", O_RDWR);
 
   if(fp == -1){
     do_debug("PROC file open error\n");
     exit(-1);;
   }
 
+  ret = 0;
 
   while(1){
 
-      per_round_advance = get_time_to_advance(fp);
+      per_round_advance = ack_and_get_next_command(fp,ret);
       if(per_round_advance == -1){
         // STOPPING EXPERIMENT
         args.stop = 1;
@@ -557,16 +639,20 @@ int main(int argc, char * argv[]){
             if(ret == THREAD_BLOCKED){
               do_debug("MAIN: Detected thread block\n");
               time_elapsed = time_elapsed + per_round_advance;
-              write_results(fp,0);
+              //write_results(fp,0);
+              ret = 0;
             }
             else if(ret >= 0){
               do_debug("MAIN: Return = %d\n", ret);
               time_elapsed = time_elapsed + ret + per_round_advance;
-              write_results(fp,ret*1000);
+              //write_results(fp,ret*1000);
               //write_results(fp,0);
             }
-            else
-              write_results(fp,0);
+            else{
+              //write_results(fp,0);
+              ret = 0;
+            }
+
 
           }
           else{
@@ -574,7 +660,8 @@ int main(int argc, char * argv[]){
             do_debug("MAIN. Thread. Still Blocked\n");
             time_elapsed += per_round_advance;
             usleep(per_round_advance);
-             write_results(fp,0);
+            //write_results(fp,0);
+            ret = 0;
           }
       }
 

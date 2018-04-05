@@ -188,9 +188,18 @@ int main(int argc, char * argv[]){
 
     avg_recv_rate =  ((float)nBytes_received/(float)(RecvTS - StartTS))*8.0;
 
+    double stdev = std_dev_transmit_time/pkt_no - ((avg_transmit_time/pkt_no)*(avg_transmit_time/pkt_no));
+    if(stdev <= 0.0){
+        stdev = 0.0;
+    }
+    else{
+      stdev = sqrt(stdev);
+    }
+
+
     do_debug("Start Time (sec) : %lu, Recv Time: %lu\n", StartTS, RecvTS);
     do_debug("Avg delay (sec) : %f\n", avg_transmit_time/pkt_no);
-    do_debug("Std delay (sec) : %f\n", sqrt(std_dev_transmit_time/pkt_no - ((avg_transmit_time/pkt_no)*(avg_transmit_time/pkt_no))));
+    do_debug("Std delay (sec) : %f\n", stdev);
     do_debug("Avg throughput : %f (Mbps), nBytes_received: %f\n", avg_recv_rate, nBytes_received);
     do_debug("#####################################################\n"); 
 

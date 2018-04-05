@@ -7,12 +7,12 @@
       "links" : [["h1", "s1", "1ms"], ["h2", "s1", "1ms"], ["s1", "s2", "1ms"], ["s2", "s3", "1ms"], ["h3", "s3", "1ms"], ["h4", "s3", "1ms"]],
       "hosts": {
         "h1": {
-            "cmd" : "sudo /usr/bin/tracer 4 /home/vignesh/VT_mechanisms/src/routing/routes/h1_cmds.txt 1.0 100000 0"
+            "cmd" : "/usr/bin/tracer 4 /home/vignesh/VT_mechanisms/src/routing/routes/h1_cmds.txt 1.0 100000 1"
         },
         "h2": {
         },
         "h3": {
-            "cmd" : "sudo /usr/bin/tracer 5 /home/vignesh/VT_mechanisms/src/routing/routes/h3_cmds.txt 1.0 100000 0"
+            "cmd" : "/usr/bin/tracer 5 /home/vignesh/VT_mechanisms/src/routing/routes/h3_cmds.txt 1.0 100000 1"
          },
         "h4": { 
         }

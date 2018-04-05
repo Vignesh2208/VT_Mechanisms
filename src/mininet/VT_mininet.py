@@ -114,8 +114,9 @@ class VTSwitch(Switch):
                 f.write(self.router_exec_path + "-i " + str(self.name) + " -n " + str(n_intfs) +" -f " + routes_file_path + "\n")
             n_round_insns = 100000
             rel_cpu_speed = 1.0
-            create_spinner = 0
-            cmd_to_run = "sudo " + cmd_to_run + " " + str(self.device_id) + " " + str(cmd_file_path) + " " + str(rel_cpu_speed) + " " + str(n_round_insns) + " " + str(create_spinner)
+            create_spinner = 1
+            #cmd_to_run = "sudo " + cmd_to_run + " " + str(self.device_id) + " " + str(cmd_file_path) + " " + str(rel_cpu_speed) + " " + str(n_round_insns) + " " + str(create_spinner)
+            cmd_to_run = cmd_to_run + " " + str(self.device_id) + " " + str(cmd_file_path) + " " + str(rel_cpu_speed) + " " + str(n_round_insns) + " " + str(create_spinner)
 
         else:
             routes_file_path = vt_mech_dir + "src/routing/routes/" + str(self.name) + "_routes.txt"
