@@ -24,6 +24,7 @@
 #include <math.h>
 #include "linkedlist.h"
 #include "hashmap.h"
+#include "TimeKeeper_functions.h"
 
 #define BUF_SIZE 20000
 #define DEBUG
@@ -47,6 +48,8 @@ void open_pipe(int * fd){
   int result = pipe(fd);
   if (result < 0){
         perror("pipe ");
+        do_debug("Pipe open error\n");
+        fflush(stdout);
         exit(1);
    }
 
@@ -61,6 +64,8 @@ void pipe_send(int * fd, int msg){
   int ret = write(fd[1], msg_buf, strlen(msg_buf));
   if(ret != strlen(msg_buf)){
     perror("Write error\n");
+    do_debug("Pipe send error\n");
+    fflush(stdout);
     exit(0);
   }
 }
@@ -69,19 +74,18 @@ void pipe_send(int * fd, int msg){
 int  pipe_read(int *fd) {
   char buf[BUFSIZE];
   flush_buffer(buf, BUFSIZE);
-  read(fd[0], buf, BUFSIZE);
+  int ret = read(fd[0], buf, BUFSIZE);
+
+  if(ret < 0){
+      do_debug("Pipe read error\n");
+      fflush(stdout);
+      exit(-1);
+  }
 
   return atoi(buf);
 }
 
 
-//From TK. Returns -1 if experiment has to be stopped.
-int get_time_to_advance(){
-
-  int per_round_advance = 100; 
-  return per_round_advance;
-
-}
 
 typedef struct thread_aruments {
   char dst_IP[IP_ADDR_SIZE];
@@ -326,6 +330,151 @@ void process_thread(void * args){
 }
 
 
+/***
+
+  TK related
+
+***/
+#define MAX_PAYLOAD 1024 
+#define TRACER_RESULTS 'J'
+#define REL_CPU_SPEED 1.0
+#define N_ROUND_INSNS 100000
+
+int str_to_i(char *s)
+{
+        int i,n;
+        n = 0;
+        for(i = 0; *(s+i) >= '0' && *(s+i) <= '9'; i++)
+                n = 10*n + *(s+i) - '0';
+        return n;
+}
+
+int get_next_value (char *write_buffer)
+{
+        int i;
+        for(i = 1; *(write_buffer+i) >= '0' && *(write_buffer+i) <= '9'; i++)
+        {
+                continue;
+        }
+
+        if(write_buffer[i] == '\0')
+          return -1;
+
+        if(write_buffer[i+1] == '\0')
+          return -1;
+
+        return (i + 1);
+}
+
+int get_next_command_tuple(char * buffer, int resume_ptr, pid_t * pid, u32 * n_insns){
+
+
+  int i = resume_ptr;
+  int nxt_idx = 0;
+  if(strcmp(buffer + resume_ptr, "STOP") == 0 || resume_ptr < 0){
+    *pid = -1;
+    *n_insns = 0;
+    return -1;
+  }
+
+  *pid = 0;
+  *n_insns = 0;
+
+  if(buffer[i] != '|' || buffer[i] == '\0')
+    return -1;
+
+  *pid = str_to_i(buffer + i + 1);
+
+  nxt_idx = get_next_value(buffer + i);
+
+  if(nxt_idx == -1){
+    *pid = 0;
+    *n_insns = 0;
+    return -1;
+  }
+  else{
+    nxt_idx = nxt_idx + i;
+    *n_insns = str_to_i(buffer + nxt_idx);
+
+    resume_ptr = nxt_idx + get_next_value(buffer + nxt_idx);
+    resume_ptr = resume_ptr - 1;
+    return resume_ptr;
+  
+  }
+
+}
+
+//From TK. Returns -1 if experiment has to be stopped.
+int get_time_to_advance(int fp){
+
+  int per_round_advance = 100;
+
+  char nxt_cmd[MAX_PAYLOAD];
+  flush_buffer(nxt_cmd, MAX_PAYLOAD);
+  int tail_ptr = 0;
+  pid_t new_cmd_pid = 0;
+  u32 n_insns;
+  int read_ret = -1;
+
+  do_debug("Waiting for nxt cmd ...\n");
+  while(read_ret == -1){
+    read_ret = read(fp, nxt_cmd,fp);
+    usleep(10000);
+  }
+
+  do_debug("Received Command: %s\n", nxt_cmd);
+  while(tail_ptr != -1){
+    tail_ptr = get_next_command_tuple(nxt_cmd, tail_ptr, &new_cmd_pid, &n_insns);
+
+    if(tail_ptr == -1 && new_cmd_pid == -1){
+      do_debug("STOP command received. Stopping...\n");
+      return -1;
+    }
+
+    do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
+
+    if(new_cmd_pid == 0)
+          break;
+
+    per_round_advance = (int) n_insns/1000;
+
+    
+  }
+
+  if(per_round_advance < 0)
+    return 100;
+  do_debug("Advancing by: %d\n", per_round_advance);
+  return per_round_advance;
+
+}
+
+void write_results(int fp, int advance_err){
+
+
+  do_debug("Writing results back \n");
+  char command[MAX_BUF_SIZ];
+  char * ptr;
+  int ret = 0;
+  flush_buffer(command,MAX_BUF_SIZ);
+  sprintf(command, "%c,%d,", TRACER_RESULTS,advance_err);
+  ptr = command;
+  while(ret != strlen(command)){
+    ret = write(fp,ptr, strlen(ptr));
+
+    if(ret < 0){
+      do_debug("Write Error!\n");
+      perror("Write Error!\n");
+      break;
+    }
+    ptr  = ptr + ret;
+
+  }
+}
+
+/***
+  END
+***/
+
 int main(int argc, char * argv[]){
   
   char * dst_IP_ptr;
@@ -380,10 +529,18 @@ int main(int argc, char * argv[]){
   
   do_debug("Started all threads\n");
 
+  addToExp(REL_CPU_SPEED, N_ROUND_INSNS);
+    int fp = open("/proc/status", O_RDWR);
+
+  if(fp == -1){
+    do_debug("PROC file open error\n");
+    exit(-1);;
+  }
+
 
   while(1){
 
-      per_round_advance = get_time_to_advance();
+      per_round_advance = get_time_to_advance(fp);
       if(per_round_advance == -1){
         // STOPPING EXPERIMENT
         args.stop = 1;
@@ -400,18 +557,24 @@ int main(int argc, char * argv[]){
             if(ret == THREAD_BLOCKED){
               do_debug("MAIN: Detected thread block\n");
               time_elapsed = time_elapsed + per_round_advance;
+              write_results(fp,0);
             }
             else if(ret >= 0){
               do_debug("MAIN: Return = %d\n", ret);
               time_elapsed = time_elapsed + ret + per_round_advance;
+              write_results(fp,ret*1000);
+              //write_results(fp,0);
             }
+            else
+              write_results(fp,0);
 
           }
           else{
             // if still blocked
-            //do_debug("MAIN. Thread: %d. Still Blocked\n", i);
-            //time_elapsed += per_round_advance;
+            do_debug("MAIN. Thread. Still Blocked\n");
+            time_elapsed += per_round_advance;
             usleep(per_round_advance);
+             write_results(fp,0);
           }
       }
 

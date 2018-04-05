@@ -11,8 +11,8 @@ all:
 	@gcc  client_n.c -o client_n -lm
 	@gcc  server_n.c -o server_n
 
-	@gcc -I${current_dir}/../utils  ../utils/linkedlist.c ../utils/hashmap.c client_n_vt.c -o client_vt -lpthread -lm
-	@gcc -I${current_dir}/../utils  ../utils/linkedlist.c ../utils/hashmap.c server_n_vt.c -o server_vt -lpthread -lm
+	@gcc -I${current_dir}/../utils  ../utils/linkedlist.c ../utils/hashmap.c client_n_vt.c -o client_vt -lpthread -lm -ltkapi
+	@gcc -I${current_dir}/../utils  ../utils/linkedlist.c ../utils/hashmap.c server_n_vt.c -o server_vt -lpthread -lm -ltkapi
 clean:
 	@rm -f udp_client_n
 	@rm -f udp_server_n

@@ -25,7 +25,12 @@ import socket
 
 import os
 script_dir =  os.path.dirname(os.path.realpath(__file__))
-vt_mech_dir = script_dir + "/../../"
+#vt_mech_dir = script_dir + "/../../"
+
+from os.path import dirname, abspath
+vt_mech_dir = dirname(dirname(dirname(abspath(__file__)))) + "/"
+
+print "VTMech Dir: ", vt_mech_dir
 
 class VTHost(Host):
     def config(self, **params):
@@ -43,16 +48,17 @@ class VTHost(Host):
         return r
 
     def describe(self, sw_addr=None, sw_mac=None):
-        print "**********"
-        print "Network configuration for: %s" % self.name
-        print "Default interface: %s\t%s\t%s" %(
-            self.defaultIntf().name,
-            self.defaultIntf().IP(),
-            self.defaultIntf().MAC()
-        )
-        if sw_addr is not None or sw_mac is not None:
-            print "Default route to switch: %s (%s)" % (sw_addr, sw_mac)
-        print "**********"
+        pass
+        #print "**********"
+        #print "Network configuration for: %s" % self.name
+        #print "Default interface: %s\t%s\t%s" %(
+        #    self.defaultIntf().name,
+        #    self.defaultIntf().IP(),
+        #    self.defaultIntf().MAC()
+        #)
+        #if sw_addr is not None or sw_mac is not None:
+            #print "Default route to switch: %s (%s)" % (sw_addr, sw_mac)
+        #print "**********"
 
 class VTSwitch(Switch):
     """VT virtual switch"""
@@ -93,7 +99,7 @@ class VTSwitch(Switch):
 
     def start(self, controllers):
     
-        print "Starting VT switch {}.\n".format(self.name)
+        #print "Starting VT switch {}.\n".format(self.name)
 
         cmd_to_run = self.exec_path
         n_intfs = 0
@@ -105,11 +111,11 @@ class VTSwitch(Switch):
             cmd_file_path  = "/tmp/cmds_" + str(self.name) + ".txt"
             routes_file_path = vt_mech_dir + "src/routing/routes/" + str(self.name) + "_routes.txt"
             with open(cmd_file_path,"w") as f :
-                f.write(self.router_exec_path + "-i " + str(self.name) + " -n " + str(n_intfs) +" -f " + routes_file_path)
+                f.write(self.router_exec_path + "-i " + str(self.name) + " -n " + str(n_intfs) +" -f " + routes_file_path + "\n")
             n_round_insns = 100000
-            rel_cpu_speed = 1
+            rel_cpu_speed = 1.0
             create_spinner = 0
-            cmd_to_run = cmd_to_run +  str(self.device_id) + " " + str(cmd_file_path) + " " + str(rel_cpu_speed) + " " + str(n_round_insns) + " " + str(create_spinner)
+            cmd_to_run = "sudo " + cmd_to_run + " " + str(self.device_id) + " " + str(cmd_file_path) + " " + str(rel_cpu_speed) + " " + str(n_round_insns) + " " + str(create_spinner)
 
         else:
             routes_file_path = vt_mech_dir + "src/routing/routes/" + str(self.name) + "_routes.txt"
@@ -125,15 +131,15 @@ class VTSwitch(Switch):
             
             self.cmd(cmd_to_run + ' >' + self.log_file + ' 2>&1 & echo $! >> ' + f.name)
             self.cmd_pid = int(f.read())
-        print "P4 switch {} PID is {}.\n".format(self.name, self.cmd_pid)
+        #print "P4 switch {} PID is {}.\n".format(self.name, self.cmd_pid)
         sleep(1)
         
-        print "P4 switch {} has been started.\n".format(self.name)
+        #print "P4 switch {} has been started.\n".format(self.name)
 
     def stop(self):
         "Terminate P4 switch."
         self.cmd('kill %' + str(self.cmd_pid))
-        self.cmd('wait')
+        #self.cmd('wait')
         self.deleteIntfs()
 
     def attach(self, intf):

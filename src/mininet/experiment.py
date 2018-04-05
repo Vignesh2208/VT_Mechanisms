@@ -34,6 +34,21 @@ from mininet.cli import CLI
 
 from VT_mininet import VTSwitch, VTHost
 import apptopo
+import timekeeper_functions
+from timekeeper_functions import *
+import old_tk_functions
+from old_tk_functions import *
+import math
+
+import json
+
+
+script_dir = os.path.dirname(os.path.realpath(__file__))
+vt_mech_dir = script_dir + "/../../"
+experiments_dir = vt_mech_dir + "experiments/"
+
+
+
 
 parser = argparse.ArgumentParser(description='WSC 2018 Experiment')
 parser.add_argument('--cli', help="start the mininet cli", action="store_true")
@@ -41,14 +56,24 @@ parser.add_argument('--manifest', help='Path to JSON config file',
                     type=str, action="store", required=True)
 parser.add_argument('--mode', help='Operating Mode', dest='mode',
                     type=str, action="store", required=False, default="normal")
+parser.add_argument('--tdf', help='tdf', dest='tdf',
+                    type=int, action="store", required=False, default=1)
+parser.add_argument('--nrounds', help='nrounds', dest='nrounds',
+                    type=int, action="store", required=False, default=100)
+parser.add_argument('--exp_no', help='exp_no', dest='exp_no',
+                    type=int, action="store", required=False, default=1)
 
 
 args = parser.parse_args()
 
 operating_mode = args.mode
+tdf = args.tdf
 device_id = 0
+n_rounds = args.nrounds
+exp_no = args.exp_no
 
 ENABLE_TIMEKEEPER = 0
+TIMESLICE = 100000 
 
 def run_command(command):
     return os.WEXITSTATUS(os.system(command))
@@ -117,8 +142,24 @@ def main():
         manifest = json.load(f)
 
     conf = manifest['targets']["multiswitch"]
+    params = conf['parameters'] if 'parameters' in conf else {}
     AppTopo = apptopo.AppTopo
+
+    n_switches = int(conf['n_switches'])
+    n_hosts = int(conf['n_hosts'])
+
+
+    if operating_mode == "APP_VT" or operating_mode == "INS_VT" :
+        ret = initializeExp(5);
+        if ret < 0 :
+            print "Initialize Exp Failed!"
+            sys.exit(-1)
     
+    def formatParams(s):
+        for param in params:
+            s = re.sub('\$'+param+'(\W|$)', str(params[param]) + r'\1', s)
+            s = s.replace('${'+param+'}', str(params[param]))
+        return s
 
     links = [l[:2] for l in conf['links']]
     latencies = dict([(''.join(sorted(l[:2])), l[2]) for l in conf['links'] if len(l)>=3])
@@ -159,9 +200,7 @@ def main():
     if args.cli or ('cli' in conf and conf['cli']):
         CLI(net)
 
-    n_switches = int(conf['n_switches'])
-    n_hosts = int(conf['n_hosts'])
-
+    
     stdout_files = dict()
     return_codes = []
     host_procs = []
@@ -188,32 +227,173 @@ def main():
         stdout_files[h.name] = open(stdout_filename, 'w')
         #cmd = formatCmd(host['cmd'])
         cmd_to_run = host['cmd'] + " >> " + stdout_filename + " 2>&1" + " &"
-        print "Host: ", h.name, "Running Command: ", cmd_to_run
+        #print "Host: ", h.name, "Running Command: ", cmd_to_run
 
 
         h.cmd(cmd_to_run)        
         pid = get_pids_with_cmd(host['cmd'][0:150], expected_no_of_pids=1)[0]
-        host_procs.append((pid, host_name))
+        host_procs.append((pid, h))
 
     for i in xrange(1,n_switches + 1) :
         switch_name = "s" + str(i)
         sw = net.get(switch_name)
 
         sw_pid = sw.cmd_pid
-        switch_procs.append((sw_pid, switch_name))
+        switch_procs.append((sw_pid,sw))
 
     print "HOST Processes :"
-    print host_procs
+    #print host_procs
+    for host_pid, h in host_procs:
+        print host_pid
 
     print "SWITCH Processes :" 
-    print switch_procs
+    #print switch_procs
+    for sw_pid, sw in switch_procs:
+        print sw_pid
+
+    exp_stats = {}
+    
+
+    if ENABLE_TIMEKEEPER == 0 :
+        print "TIMEKEEPER DISABLED. RUNNING EXPERIMENT FOR 60 secs ..."
+        exp_stats["start_time"] = time.time()
+        sleep(60)
+        exp_stats["end_time"] = time.time()
+    else:
+
+        if operating_mode == "VT" :
+
+            print "RUNNING in ", operating_mode, " MODE .."
+            for host_pid, host in host_procs :
+                o_dilate_all(host_pid, tdf)
+                o_addToExp(host_pid)
+
+            for sw_pid, sw in switch_procs :
+                o_dilate_all(sw_pid, tdf)
+                o_addToExp(sw_pid)
+
+            o_set_cbe_experiment_timeslice(TIMESLICE*my_tdf)
+            print "Sychronize and Freeze"
+            o_synchronizeAndFreeze()
+            sleep(2)
+            print "Starting Experiment"
+            o_startExp()
+
+            n_rounds_per_sec = 1000000000/TIMESLICE
+
+            print "Progress Experiment for ", n_rounds, " Rounds !"
+            exp_stats["start_time"] = time.time()
+            o_progress_n_rounds(n_rounds)
+            exp_stats["end_time"] = time.time()
+
+            stats = o_get_experiment_stats()
+
+            if stats[0] < 0 :
+                print "ERROR collecting stats "
+            else:
+                exp_stats["total_rounds"] = float(stats[2])
+                exp_stats["total_round_error"] = float(stats[0])
+                exp_stats["total_round_error_sq"] = float(stats[1])
+
+                if exp_stats["total_rounds"] > 0 :
+                    exp_stats["mu_round_error"] = float(stats[0])/float(exp_stats["total_rounds"])
+                    exp_stats["std_round_error"] = math.sqrt(float(stats[1])/float(exp_stats["total_rounds"]) - (exp_stats["mu_round_error"]**2))
+                    exp_stats["total_round_error"] = float(stats[0])
+                    exp_stats["total_round_error_sq"] = float(stats[1])
+                    exp_stats["total_rounds"] = float(stats[2])
+                else:
+                    exp_stats["mu_round_error"] = 0.0
+                    exp_stats["std_round_error"] = 0.0
+
+            stat_file = operating_mode + "_" + str(exp_no) + ".json" 
+            with open(experiments_dir + stat_file, 'w') as fp:
+                json.dump(exp_stats, fp, sort_keys=True, indent=4)
+            
+            print "Stopping Experiment"
+            o_resume_exp_cbe()
+            sleep(2)
+            o_stopExp()
+            sleep(10)
+            
 
 
-    print "RUNNING EXPERIMENT FOR 5 secs ..."
 
-    #if ENABLE_TIMEKEEPER == 0 :
-    while 1 :
-        sleep(5)
+        elif operating_mode == "APP_VT" or operating_mode == "INS_VT":
+
+
+            print "RUNNING in ", operating_mode, " MODE .."
+            print "Synchronize and Freezing"
+            sleep(2)
+
+            while synchronizeAndFreeze(len(host_procs) + len(switch_procs)) <= 0 :
+                print "Sync and Freeze Failed. Retrying in 1 sec"
+                sleep(1)
+            
+
+            print "Synchronize and Freeze succeeded !"
+            sleep(1)
+
+            print "Setting Net dev owners for hosts:"
+            for host_pid, host in host_procs :
+                for name in host.intfNames():
+                    if name != "lo" :
+                        #print name
+                        set_netdevice_owner(host_pid,name)
+
+            sleep(1)
+
+            print "Setting Net dev owners for switches: "
+            for sw_pid, sw in switch_procs :
+                for name in sw.intfNames():
+                    if name != "lo" :
+                        #print name
+                        set_netdevice_owner(sw_pid,name)
+
+            sleep(1)
+
+            print "Progress Experiment for ", n_rounds, " Rounds !"
+            exp_stats["start_time"] = time.time()
+            progress_n_rounds(n_rounds)
+            exp_stats["end_time"] = time.time()
+
+            print "Copying files ..."
+            os.system("cp /tmp/*.log " + str(experiments_dir))
+
+            sleep(1)
+
+            print "Getting stats ..."
+            stats = get_experiment_stats()
+
+            if stats[0] < 0 :
+                print "ERROR collecting stats "
+            else:
+                exp_stats["total_rounds"] = float(stats[2])
+                exp_stats["total_round_error"] = float(stats[0])
+                exp_stats["total_round_error_sq"] = float(stats[1])
+
+                if exp_stats["total_rounds"] > 0 :
+                    exp_stats["mu_round_error"] = float(stats[0])/float(exp_stats["total_rounds"])
+                    #exp_stats["std_round_error"] = math.sqrt(float(stats[1])/float(exp_stats["total_rounds"]) - (exp_stats["mu_round_error"]**2))
+                    exp_stats["total_round_error"] = float(stats[0])
+                    exp_stats["total_round_error_sq"] = float(stats[1])
+                    exp_stats["total_rounds"] = float(stats[2])
+                else:
+                    exp_stats["mu_round_error"] = 0.0
+                    exp_stats["std_round_error"] = 0.0
+
+
+
+            stat_file = operating_mode + "_" +  str(exp_no) + ".json" 
+            with open(experiments_dir + stat_file, 'w') as fp:
+                json.dump(exp_stats, fp, sort_keys=True, indent=4)
+            
+            print "Stopping Experiment"
+            sleep(2)
+            stopExp()
+
+        else:
+            print "UNKNOWN MODE: ", operating_mode
+
     print "STOPPING EXPERIMENT ..."
     net.stop()
 

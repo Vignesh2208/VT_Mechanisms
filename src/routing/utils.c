@@ -32,6 +32,8 @@ void open_pipe(int * fd){
   int result = pipe(fd);
   if (result < 0){
         perror("pipe ");
+        do_debug("Pipe open error\n");
+        fflush(stdout);
         exit(1);
    }
 
@@ -46,6 +48,8 @@ void pipe_send(int * fd, int msg){
   int ret = write(fd[1], msg_buf, strlen(msg_buf));
   if(ret != strlen(msg_buf)){
     perror("Write error\n");
+    do_debug("Pipe send error\n");
+    fflush(stdout);
     exit(0);
   }
 }
@@ -54,7 +58,13 @@ void pipe_send(int * fd, int msg){
 int  pipe_read(int *fd) {
   char buf[BUFSIZE];
   flush_buffer(buf, BUFSIZE);
-  read(fd[0], buf, BUFSIZE);
+  int ret = read(fd[0], buf, BUFSIZE);
+
+  if(ret < 0){
+      do_debug("Pipe read error\n");
+      fflush(stdout);
+      exit(-1);
+  }
 
   return atoi(buf);
 }

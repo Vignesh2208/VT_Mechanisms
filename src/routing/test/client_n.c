@@ -98,7 +98,7 @@ int main(int argc, char * argv[]){
 
   memset(dst_IP, 0, IP_ADDR_SIZE);
 
-  usleep(2000000);
+  
 
   /* Check command line options */
   while((option = getopt(argc, argv, "n:d:h:")) > 0) {
@@ -134,12 +134,15 @@ int main(int argc, char * argv[]){
 
   /*Initialize size variable to be used later on*/
   addr_size = sizeof(serverAddr);
+  len = sizeof(rcvaddr);
+
+  usleep(1000000);
 
   struct timeval StartTimeStamp;
   gettimeofday(&StartTimeStamp, NULL);
   long StartTS = StartTimeStamp.tv_sec * 1000000 + StartTimeStamp.tv_usec;
 
-  len = sizeof(rcvaddr);
+  
   while(1){
 
     flush_buffer(buffer, BUF_SIZE);
