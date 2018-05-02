@@ -85,7 +85,7 @@ def o_fixDilation(dilation) :
 		dil = dil*-1
         
 	elif dilation == 1.0 or dilation == -1.0 :
-                dil = 0
+                dil = 1000.0
 	else:
 		dil = (int)(dilation*1000.0)
         

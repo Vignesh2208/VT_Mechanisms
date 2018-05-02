@@ -24,7 +24,7 @@
  #include <net/if.h>
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
-#define BUFSIZE 2000   
+#define BUFSIZE 20000  
 #define CLIENT 0
 #define SERVER 1
 #define PORT 55555

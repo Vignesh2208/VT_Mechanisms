@@ -4,17 +4,21 @@
       "cli" : false,
       "n_switches" : 3,
       "n_hosts" : 4,
-      "links" : [["h1", "s1", "1ms"], ["h2", "s1", "1ms"], ["s1", "s2", "1ms"], ["s2", "s3", "1ms"], ["h3", "s3"], ["h4", "s3", "1ms"]],
+      "links" : [["h1", "s1", "1ms"], ["h2", "s1", "1ms"], ["s1", "s2", "1ms"], ["s2", "s3", "1ms"], ["h3", "s3", "1ms" ], ["h4", "s3", "1ms"]],
       "hosts": {
         "h1": {
             "cmd" : "/home/vignesh/VT_mechanisms/src/routing/test/client_vt -n 100 -d 10.0.0.3"
         },
         "h2": {
+
+          "cmd" : "/home/vignesh/VT_mechanisms/src/routing/test/client_vt -n 100 -d 10.0.0.4"
         },
         "h3": {
             "cmd" : "/home/vignesh/VT_mechanisms/src/routing/test/server_vt -n 100 -d 10.0.0.3"
          },
         "h4": { 
+
+          "cmd" : "/home/vignesh/VT_mechanisms/src/routing/test/server_vt -n 100 -d 10.0.0.4"
         }
       }
     }

@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "pkt_info.h"
+#include <semaphore.h>
 
 
 extern llist routing_list;
@@ -14,21 +15,25 @@ extern int str_hash(char * s);
 
 #ifdef APP_VT
 
-int RECVFROM_US = 50;
+int RECVFROM_US = 6;
 int RAWSOCKET_US = 50;
 int SETPROMISC_US = 50;
-int INTF_NAME_TO_SOCK_IDX_US = 50;
-int GET_DST_SOCK_IDX_US = 50;
-int SEND_PACKET_US = 50;
-int SELECT_US = 50;
-int FLUSH_BUFFER_US = 50;
+//int INTF_NAME_TO_SOCK_IDX_US = 50;
+int INTF_NAME_TO_SOCK_IDX_US = 25;
+int GET_DST_SOCK_IDX_US = 15;
+int SEND_PACKET_US = 23;
+int SELECT_US = 0;
+int FLUSH_BUFFER_US = 210;
 
 extern hashmap func_times_us;
 #endif
 
 
+sem_t buf_mutex_1,empty_count_1,fill_count_1;
+sem_t buf_mutex_2,empty_count_2,fill_count_2;
 
-void open_pipe(int * fd){
+
+void open_pipe(int * fd, int id){
   int result = pipe(fd);
   if (result < 0){
         perror("pipe ");
@@ -37,34 +42,103 @@ void open_pipe(int * fd){
         exit(1);
    }
 
+   if(id == 1){
+    sem_init(&buf_mutex_1,0,1);
+    sem_init(&fill_count_1,0,0);
+    sem_init(&empty_count_1,0,1);
+   }
+   else{
+    sem_init(&buf_mutex_2,0,1);
+    sem_init(&fill_count_2,0,0);
+    sem_init(&empty_count_2,0,1);
+   }
+
 }
 
-void pipe_send(int * fd, int msg){
+void pipe_send(int * fd, int msg, int id){
 
 
   char msg_buf[BUFSIZE];
   flush_buffer(msg_buf, BUFSIZE);
   sprintf(msg_buf,"%d", msg);
-  int ret = write(fd[1], msg_buf, strlen(msg_buf));
-  if(ret != strlen(msg_buf)){
+  int ret;
+
+  do_debug("Pipe sending message: %s\n", msg_buf);
+  
+  if(id == 1){
+    sem_wait(&empty_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+
+    sem_wait(&empty_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
+  //fcntl(fd[1], F_SETFL, O_NONBLOCK);
+  
+  while(1){
+    ret = write(fd[1], msg_buf, strlen(msg_buf));
+    if(ret){
+      break;
+    }
+
+  }
+  
+  if(id == 1){
+
+    sem_post(&buf_mutex_1);
+    sem_post(&fill_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&fill_count_2);
+  }
+
+  /*if(ret != strlen(msg_buf)){
     perror("Write error\n");
     do_debug("Pipe send error\n");
     fflush(stdout);
     exit(0);
-  }
+  }*/
+
+  do_debug("Pipe sent message: %s\n", msg_buf);
+
 }
 
 
-int  pipe_read(int *fd) {
+int  pipe_read(int *fd, int id) {
   char buf[BUFSIZE];
   flush_buffer(buf, BUFSIZE);
+  do_debug("Pipe read: Waiting for next msg\n");
+  if(id == 1){
+    sem_wait(&fill_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+    sem_wait(&fill_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
   int ret = read(fd[0], buf, BUFSIZE);
+
+  if(id == 1){
+    sem_post(&buf_mutex_1);
+    sem_post(&empty_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&empty_count_2);
+  }
+
 
   if(ret < 0){
       do_debug("Pipe read error\n");
       fflush(stdout);
       exit(-1);
   }
+
+  do_debug("Pipe read: received msg: %s\n", buf);
 
   return atoi(buf);
 }
@@ -102,7 +176,7 @@ int rawSocket(int thread_no, char * bind_intf)
         pthread_exit(NULL);
     }
     
-    do_debug("THREAD %d. Raw socket created successfully!\n",thread_no);
+    do_debug("THREAD %d. Raw socket created successfully for Intf: %s!\n",thread_no, bind_intf);
 
     /*
     if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
@@ -124,6 +198,11 @@ int rawSocket(int thread_no, char * bind_intf)
 
     int optval = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int));
+
+    int a = 100000;
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &a, sizeof(int)) == -1) {
+        fprintf(stderr, "Error setting socket opts: %s\n", strerror(errno));
+    }
 
     /*if(setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(one)) < 0)
     {
@@ -415,7 +494,7 @@ int get_dst_sock_idx(char * pkt, int n_intfs, char * intf_names[N_MAX_TAPS]){
     entry = (routing_entry*) head->item;
     if(strcmp(entry->ip_address, dst_IP) == 0){
       dst_intf = entry->output_if;
-      do_debug("THREAD. ROUTING FOR DST IP: %s, SRC_IP: %s, OUTPUT INTERFACE: %s\n", dst_IP, src_IP, dst_intf);
+      //do_debug("THREAD. ROUTING FOR DST IP: %s, SRC_IP: %s, OUTPUT INTERFACE: %s\n", dst_IP, src_IP, dst_intf);
     }
     head = head->next;
   }
@@ -533,14 +612,14 @@ int send_packet(char * pkt, int size,  int sock, char * intf_name){
 
 
 
-  do_debug("Sending to : %x:%x:%x:%x:%x:%x\n", eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], eth->h_dest[3], eth->h_dest[4], eth->h_dest[5] );
+  //do_debug("Sending to : %x:%x:%x:%x:%x:%x\n", eth->h_dest[0], eth->h_dest[1], eth->h_dest[2], eth->h_dest[3], eth->h_dest[4], eth->h_dest[5] );
 
 
   if (sendto(sock, sendBuf, size, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll)) < 0)
       perror("THREAD. Send to failed!\n");
-  else
-      do_debug("THREAD. Send to success! Dst_Intf: %s. H proto: %x\n", intf_name, eth->h_proto);
-
+  else{
+      //do_debug("THREAD. Send to success! Dst_Intf: %s. H proto: %x\n", intf_name, eth->h_proto);
+    }
   
   return SUCCESS;
 }
@@ -551,7 +630,7 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
     *curr_round_time_left = 0;
     //pipe_send(thread_to_main_fds, THREAD_READY);
     do_debug("THREAD. Waiting for first cmd\n");
-    *curr_round_time_left = pipe_read(main_to_thread_fds);
+    *curr_round_time_left = pipe_read(main_to_thread_fds,1);
     do_debug("THREAD. Got first cmd: %d\n", *curr_round_time_left);
     if(*curr_round_time_left < 0)
       return THREAD_EXITING;
@@ -571,8 +650,8 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
   if(*curr_round_time_left <= 0){
 
       do_debug("THREAD. Finishing round\n");
-      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left));
-      *curr_round_time_left = pipe_read(main_to_thread_fds);
+      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left),2);
+      *curr_round_time_left = pipe_read(main_to_thread_fds,1);
 
       if(*curr_round_time_left <= 0)
         return THREAD_EXITING;
@@ -580,11 +659,13 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
       return SUCCESS;
   }
 
+  return SUCCESS;
+
 }
 
 int update_stub_blocking(int * curr_round_time_left, int *thread_to_main_fds, int * main_to_thread_fds){
-  pipe_send(thread_to_main_fds, THREAD_BLOCKED);
-  *curr_round_time_left = pipe_read(main_to_thread_fds);
+  pipe_send(thread_to_main_fds, THREAD_BLOCKED,2);
+  *curr_round_time_left = pipe_read(main_to_thread_fds,1);
 
   if(*curr_round_time_left < 0)
       return THREAD_EXITING;
@@ -764,7 +845,7 @@ void process_thread(void * args){
               #endif
             }
             else{
-              goto repeat;
+              //goto repeat;
             }
         }
 
@@ -789,7 +870,7 @@ void process_thread(void * args){
         //blocking recvfrom. need to notify main thread about going to block through pipe.
         arg->is_blocked = 1;
         exp_curr_round_time_us = 0;
-        pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
+        pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED, 2);
         #endif
 
         while(1){
@@ -818,7 +899,7 @@ void process_thread(void * args){
         #ifdef APP_VT
         //blocking recvfrom. need to notify main thread about resume after blocking
         arg->is_blocked = 0;
-        exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread);
+        exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread, 1);
         if(exp_curr_round_time_us <= 0 || arg->stop){
           free(poll_set);
           finish_thread(socks, n_intfs);

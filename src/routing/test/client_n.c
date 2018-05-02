@@ -23,9 +23,25 @@
 #include <stdarg.h>
 #include <math.h>
 
-#define BUF_SIZE 20000
+#define BUF_SIZE 1000
 #define DEBUG
 #define IP_ADDR_SIZE 100
+
+struct timeval start_sendto;
+struct timeval stop_sendto;
+struct timeval start_flush;
+struct timeval stop_flush;
+struct timeval start_comp;
+struct timeval stop_comp;
+
+int n_sendto = 0;
+int n_flush = 0;
+int n_comp = 0;
+
+float avg_sendto = 0.0;
+float avg_flush = 0.0;
+float avg_comp = 0.0;
+
 
 void do_debug(char *msg, ...){
   
@@ -85,7 +101,8 @@ int main(int argc, char * argv[]){
 
   float nBytes_received = 0.0;
 
-
+  long start;
+  long stop;
 
   int sock;
   char * dst_IP_ptr;
@@ -95,6 +112,7 @@ int main(int argc, char * argv[]){
   char sendbuf[BUF_SIZE];
   int n_pkts;
   int pkt_no = 0;
+
 
   memset(dst_IP, 0, IP_ADDR_SIZE);
 
@@ -142,34 +160,54 @@ int main(int argc, char * argv[]){
   gettimeofday(&StartTimeStamp, NULL);
   long StartTS = StartTimeStamp.tv_sec * 1000000 + StartTimeStamp.tv_usec;
 
-  
+  printf("My process ID : %d\n", getpid());
+
+
   while(1){
+
+    //usleep(10000);
+
+    gettimeofday(&start_flush,NULL);
 
     flush_buffer(buffer, BUF_SIZE);
     sprintf(buffer,"REQUEST: %d", pkt_no + 1);
+
+    n_flush ++;
+    gettimeofday(&stop_flush,NULL);
 
     nBytes = strlen(buffer) + 1;
     
     struct timeval SendTimeStamp;
     struct timeval RecvTimeStamp;
 
+    pkt_no ++;
+
     
+    
+    //if(pkt_no % 20 == 0)
+    do_debug("Sending REQUEST no %d\n", pkt_no);
+
+    gettimeofday(&start_sendto,NULL);
     gettimeofday(&SendTimeStamp, NULL);
-    do_debug("Sending REQUEST no %d\n", pkt_no + 1);
+
 
     /*Send message to server*/
     sendto(sock,buffer,nBytes,0,(struct sockaddr *)&serverAddr,addr_size);
-   
+
+    gettimeofday(&stop_sendto,NULL);
+    n_sendto ++;
+
 
     flush_buffer(buffer, BUF_SIZE);
-     do_debug("Sent REQUEST no %d, sock = %d\n", pkt_no + 1, sock);
+     //do_debug("Sent REQUEST no %d, sock = %d\n", pkt_no + 1, sock);
     /*Receive message from server*/
-    nBytes = recvfrom(sock,buffer,BUF_SIZE,0,((struct sockaddr *)&serverAddr), &addr_size);
+    nBytes = recvfrom(sock,buffer,BUF_SIZE,0,((struct sockaddr *)&rcvaddr), &len);
 
-    do_debug("Received from server: %d bytes\n",nBytes);
+    //do_debug("Received from server: %d bytes\n",nBytes);
 
     if(nBytes > 0){
     gettimeofday(&RecvTimeStamp, NULL);
+    gettimeofday(&start_comp,NULL);
 
     nBytes_received += (float)nBytes;
 
@@ -178,17 +216,20 @@ int main(int argc, char * argv[]){
     long SendTS = SendTimeStamp.tv_sec * 1000000 + SendTimeStamp.tv_usec;
 
     //do_debug("Received from server: %s bytes\n",nBytes);
+    int count;
+    count = pkt_no;
 
-    pkt_no ++;
+    //if(pkt_no >= 10){
 
+    //count = pkt_no - 10 + 1;
 
-    double transit_time = (float)(RecvTS - SendTS)/(float)1000000.0; 
+    float transit_time = (float)(RecvTS - SendTS)/(float)1000000.0; 
     avg_transmit_time += transit_time;
-    std_dev_transmit_time += transit_time*transit_time;
+    std_dev_transmit_time += (transit_time*transit_time);
 
     avg_recv_rate =  ((float)nBytes_received/(float)(RecvTS - StartTS))*8.0;
 
-    double stdev = std_dev_transmit_time/pkt_no - ((avg_transmit_time/pkt_no)*(avg_transmit_time/pkt_no));
+    float stdev = (float)std_dev_transmit_time/(float)count - ((avg_transmit_time/(float)count)*(avg_transmit_time/(float)count));
     if(stdev <= 0.0){
         stdev = 0.0;
     }
@@ -196,12 +237,28 @@ int main(int argc, char * argv[]){
       stdev = sqrt(stdev);
     }
 
+    //if(pkt_no % 20 == 0){
 
+    do_debug("Transmit Time (sec) : %f\n", transit_time);
     do_debug("Start Time (sec) : %lu, Recv Time: %lu\n", StartTS, RecvTS);
-    do_debug("Avg delay (sec) : %f\n", avg_transmit_time/pkt_no);
+    do_debug("Avg delay (sec) : %f\n", avg_transmit_time/(float)count);
     do_debug("Std delay (sec) : %f\n", stdev);
     do_debug("Avg throughput : %f (Mbps), nBytes_received: %f\n", avg_recv_rate, nBytes_received);
+    do_debug("Avg comp : %f (us)\n", avg_comp/n_comp);
+    do_debug("Avg sendto : %f (us)\n", avg_sendto/n_sendto);
+    do_debug("Avg flush : %f (us)\n", avg_flush/n_flush);
     do_debug("#####################################################\n"); 
+
+    //}
+
+    //}
+
+    n_comp ++;
+    gettimeofday(&stop_comp,NULL);
+
+    avg_comp += (stop_comp.tv_sec * 1000000 + stop_comp.tv_usec) - (start_comp.tv_sec * 1000000 + start_comp.tv_usec);
+    avg_flush += (stop_flush.tv_sec * 1000000 + stop_flush.tv_usec) - (start_flush.tv_sec * 1000000 + start_flush.tv_usec);
+    avg_sendto += (stop_sendto.tv_sec * 1000000 + stop_sendto.tv_usec) - (start_sendto.tv_sec * 1000000 + start_sendto.tv_usec);
 
     }
 

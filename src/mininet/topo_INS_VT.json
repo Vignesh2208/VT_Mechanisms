@@ -10,11 +10,15 @@
             "cmd" : "/usr/bin/tracer 4 /home/vignesh/VT_mechanisms/src/routing/routes/h1_cmds.txt 1.0 100000 1"
         },
         "h2": {
+
+            "cmd" : "/usr/bin/tracer 6 /home/vignesh/VT_mechanisms/src/routing/routes/h2_cmds.txt 1.0 100000 1"
         },
         "h3": {
             "cmd" : "/usr/bin/tracer 5 /home/vignesh/VT_mechanisms/src/routing/routes/h3_cmds.txt 1.0 100000 1"
          },
         "h4": { 
+
+          "cmd" : "/usr/bin/tracer 7 /home/vignesh/VT_mechanisms/src/routing/routes/h4_cmds.txt 1.0 100000 1"
         }
       }
     }

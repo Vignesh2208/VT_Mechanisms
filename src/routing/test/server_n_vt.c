@@ -29,13 +29,14 @@
 #include <sys/ioctl.h>
 #define _GNU_SOURCE
 #include <sched.h>
+#include <semaphore.h>
 
 #define TK_IOC_MAGIC  'k'
 
 #define TK_IO_GET_STATS _IOW(TK_IOC_MAGIC,  1, int)
 #define TK_IO_WRITE_RESULTS _IOW(TK_IOC_MAGIC,  2, int)
 
-#define BUF_SIZE 20000
+#define BUF_SIZE 1000
 #define DEBUG
 #define IP_ADDR_SIZE 100
 #define SUCCESS 1
@@ -47,13 +48,18 @@
 #define THREAD_EXITING -2
 #define BUFSIZE 2000  
 
-int SENDTO_US = 50;
-int FLUSH_BUFFER_US = 50;
-int FILL_BUFFER_US = 50;
+int SENDTO_US = 21;
+int FLUSH_BUFFER_US = 11;
+int FILL_BUFFER_US = 12;
 
 hashmap func_times_us;
 
-void open_pipe(int * fd){
+
+sem_t buf_mutex_1,empty_count_1,fill_count_1;
+sem_t buf_mutex_2,empty_count_2,fill_count_2;
+
+
+void open_pipe(int * fd, int id){
   int result = pipe(fd);
   if (result < 0){
         perror("pipe ");
@@ -62,15 +68,58 @@ void open_pipe(int * fd){
         exit(1);
    }
 
+   if(id == 1){
+    sem_init(&buf_mutex_1,0,1);
+    sem_init(&fill_count_1,0,0);
+    sem_init(&empty_count_1,0,1);
+   }
+   else{
+    sem_init(&buf_mutex_2,0,1);
+    sem_init(&fill_count_2,0,0);
+    sem_init(&empty_count_2,0,1);
+   }
+
 }
 
-void pipe_send(int * fd, int msg){
+void pipe_send(int * fd, int msg, int id){
 
 
   char msg_buf[BUFSIZE];
   flush_buffer(msg_buf, BUFSIZE);
   sprintf(msg_buf,"%d", msg);
-  int ret = write(fd[1], msg_buf, strlen(msg_buf));
+  int ret;
+
+  if(id == 1){
+    sem_wait(&empty_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+
+    sem_wait(&empty_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
+  fcntl(fd[1], F_SETFL, O_NONBLOCK);
+  do_debug("Pipe sending message: %s\n", msg_buf);
+  while(1){
+    ret = write(fd[1], msg_buf, strlen(msg_buf));
+    if(ret){
+      break;
+    }
+
+  }
+  do_debug("Pipe sent message: %s\n", msg_buf);
+
+  if(id == 1){
+
+    sem_post(&buf_mutex_1);
+    sem_post(&fill_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&fill_count_2);
+  }
+
   if(ret != strlen(msg_buf)){
     perror("Write error\n");
     do_debug("Pipe send error\n");
@@ -80,10 +129,30 @@ void pipe_send(int * fd, int msg){
 }
 
 
-int  pipe_read(int *fd) {
+int  pipe_read(int *fd, int id) {
   char buf[BUFSIZE];
   flush_buffer(buf, BUFSIZE);
+  do_debug("Pipe read: Waiting for next msg\n");
+  if(id == 1){
+    sem_wait(&fill_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+    sem_wait(&fill_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
   int ret = read(fd[0], buf, BUFSIZE);
+
+  if(id == 1){
+    sem_post(&buf_mutex_1);
+    sem_post(&empty_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&empty_count_2);
+  }
+
 
   if(ret < 0){
       do_debug("Pipe read error\n");
@@ -91,10 +160,10 @@ int  pipe_read(int *fd) {
       exit(-1);
   }
 
+  do_debug("Pipe read: received msg: %s\n", buf);
+
   return atoi(buf);
 }
-
-
 
 typedef struct thread_aruments {
   char dst_IP[IP_ADDR_SIZE];
@@ -156,7 +225,7 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
     *curr_round_time_left = 0;
     //pipe_send(thread_to_main_fds, THREAD_READY);
     do_debug("THREAD. Waiting for first cmd\n");
-    *curr_round_time_left = pipe_read(main_to_thread_fds);
+    *curr_round_time_left = pipe_read(main_to_thread_fds,1);
     do_debug("THREAD. Got first cmd: %d\n", *curr_round_time_left);
     if(*curr_round_time_left < 0)
       return THREAD_EXITING;
@@ -176,14 +245,16 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
   if(*curr_round_time_left <= 0){
 
       do_debug("THREAD. Finishing round\n");
-      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left));
-      *curr_round_time_left = pipe_read(main_to_thread_fds);
+      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left),2);
+      *curr_round_time_left = pipe_read(main_to_thread_fds,1);
 
       if(*curr_round_time_left <= 0)
         return THREAD_EXITING;
 
       return SUCCESS;
   }
+
+  return SUCCESS;
 
 }
 
@@ -296,13 +367,13 @@ void process_thread(void * args){
     do_debug("Waiting for next request\n");
     arg->is_blocked = 1;
     exp_curr_round_time_us = 0;
-    pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
+    pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED,2);
 
 
     nBytes = recvfrom(sock,buffer,BUF_SIZE,0,(struct sockaddr *)&serverStorage, &addr_size);
 
     arg->is_blocked = 0;
-    exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread);
+    exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread,1);
     if(exp_curr_round_time_us <= 0 || arg->stop){
       finish_thread(&sock);
     }
@@ -598,8 +669,8 @@ int main(int argc, char * argv[]){
   args.stop = 0;
   do_debug("Starting Thread\n");
   do_debug("Starting Thread. Opening pipes\n");
-  open_pipe(args.fds_main_to_thread);
-  open_pipe(args.fds_thread_to_main);
+  open_pipe(args.fds_main_to_thread,1);
+  open_pipe(args.fds_thread_to_main,2);
   time_elapsed = 0;
   pthread_create(&tid, NULL, process_thread, &args);
   
@@ -622,20 +693,20 @@ int main(int argc, char * argv[]){
 
   while(1){
 
-      per_round_advance = ack_and_get_next_command(fp,ret);
+      per_round_advance = ack_and_get_next_command(fp,ret*1000);
       if(per_round_advance == -1){
         // STOPPING EXPERIMENT
         args.stop = 1;
         do_debug("MAIN: Instructing Thread to Stop. Time elapsed = %d\n",time_elapsed);
-        pipe_send(args.fds_main_to_thread, THREAD_EXITING);
+        pipe_send(args.fds_main_to_thread, THREAD_EXITING,1);
         break;
       }
       else{
 
           if(!args.is_blocked){
-            do_debug("MAIN: Instructing Thread to run for 10ms. Time elapsed = %d\n",time_elapsed);
-            pipe_send(args.fds_main_to_thread, per_round_advance);
-            ret = pipe_read(args.fds_thread_to_main);
+            do_debug("MAIN: Instructing Thread to run for %d us. Time elapsed = %d\n",per_round_advance, time_elapsed);
+            pipe_send(args.fds_main_to_thread, per_round_advance,1);
+            ret = pipe_read(args.fds_thread_to_main,2);
             if(ret == THREAD_BLOCKED){
               do_debug("MAIN: Detected thread block\n");
               time_elapsed = time_elapsed + per_round_advance;

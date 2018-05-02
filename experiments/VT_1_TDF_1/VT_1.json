@@ -1,0 +1,9 @@
+{
+    "end_time": 1525280583.502139, 
+    "mu_round_error": 2705.7214285714285, 
+    "start_time": 1525280541.087156, 
+    "std_round_error": 5056.638223404751, 
+    "total_round_error": 1894005000.0, 
+    "total_round_error_sq": 23023363000000.0, 
+    "total_rounds": 700000.0
+}

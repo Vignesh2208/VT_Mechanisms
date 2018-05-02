@@ -132,6 +132,7 @@ class VTSwitch(Switch):
             
             self.cmd(cmd_to_run + ' >' + self.log_file + ' 2>&1 & echo $! >> ' + f.name)
             self.cmd_pid = int(f.read())
+            self.pid = self.cmd_pid
         #print "P4 switch {} PID is {}.\n".format(self.name, self.cmd_pid)
         sleep(1)
         

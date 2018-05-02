@@ -20,9 +20,25 @@
 #include <errno.h>
 #include <stdarg.h>
 
-#define BUF_SIZE 20000
+#define BUF_SIZE 1000
 #define DEBUG
 #define IP_ADDR_SIZE 100
+
+struct timeval start_sendto;
+struct timeval stop_sendto;
+struct timeval start_flush;
+struct timeval stop_flush;
+struct timeval start_fill;
+struct timeval stop_fill;
+
+int n_sendto = 0;
+int n_flush = 0;
+int n_fill = 0;
+
+float avg_sendto = 0.0;
+float avg_flush = 0.0;
+float avg_fill = 0.0;
+
 
 void do_debug(char *msg, ...){
   
@@ -68,6 +84,12 @@ void fill_buffer(char * buffer, int size){
     buffer[i] = 'A';
   }
 
+}
+
+void flush_buffer(char * buf, int size){
+  int i = 0;
+  for(i = 0 ; i < size; i++)
+      buf[i] = '\0';
 }
 
 int main(int argc, char * argv[]){
@@ -122,21 +144,53 @@ int main(int argc, char * argv[]){
   /*Initialize size variable to be used later on*/
   addr_size = sizeof(serverStorage);
 
+   printf("My process ID : %d\n", getpid());
+
   while(1){
+
+    gettimeofday(&start_flush,NULL);
+    flush_buffer(buffer, BUF_SIZE);
+    gettimeofday(&stop_flush,NULL);
+
+    n_flush ++;
     /* Try to receive any incoming UDP datagram. Address and port of 
       requesting client will be stored on serverStorage variable */
-    do_debug("Waiting for request\n", nBytes);
+    //do_debug("Waiting for request\n", nBytes);
     nBytes = recvfrom(udpSocket,buffer,BUF_SIZE,0,(struct sockaddr *)&serverStorage, &addr_size);
 
     if(nBytes){
 
-      do_debug("Received :%d bytes from client\n", nBytes);
+      //do_debug("Received :%d bytes from client\n", nBytes);
       /*Convert message received to uppercase*/
+
+      gettimeofday(&start_fill,NULL);
       memset(buffer,0,BUF_SIZE);
       fill_buffer(buffer, BUF_SIZE - 1);
+      gettimeofday(&stop_fill,NULL);
+      n_fill ++;
 
+
+      gettimeofday(&start_sendto,NULL);
       /*Send uppercase message back to client, using serverStorage as the address*/
       sendto(udpSocket,buffer,BUF_SIZE-1,0,(struct sockaddr *)&serverStorage,addr_size);
+
+      gettimeofday(&stop_sendto,NULL);
+
+      n_sendto ++;
+
+      avg_fill += (stop_fill.tv_sec * 1000000 + stop_fill.tv_usec) - (start_fill.tv_sec * 1000000 + start_fill.tv_usec);
+      avg_flush += (stop_flush.tv_sec * 1000000 + stop_flush.tv_usec) - (start_flush.tv_sec * 1000000 + start_flush.tv_usec);
+      avg_sendto += (stop_sendto.tv_sec * 1000000 + stop_sendto.tv_usec) - (start_sendto.tv_sec * 1000000 + start_sendto.tv_usec);
+
+      /*
+      do_debug("Avg fill : %f (us)\n", avg_fill/n_fill);
+      do_debug("Avg sendto : %f (us)\n", avg_sendto/n_sendto);
+      do_debug("Avg flush : %f (us)\n", avg_flush/n_flush);
+      do_debug("#####################################################\n"); 
+      */
+
+
+
 
     }
   }

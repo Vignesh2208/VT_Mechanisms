@@ -21,8 +21,8 @@ pthread_mutex_t lock;
 #ifdef APP_VT
 hashmap func_times_us;
 extern void init_func_times(void);
-extern void pipe_send(int * fd, char * msg);
-extern int pipe_read(int *fd);
+extern void pipe_send(int * fd, char * msg, int id);
+extern int pipe_read(int *fd, int id);
 extern void init_func_times(void);
 
 #endif
@@ -370,8 +370,8 @@ int main(int argc, char *argv[]) {
 
 	do_debug("Starting Thread: %d. Opening pipes\n",0);
 	#ifdef APP_VT
-	open_pipe(args.fds_main_to_thread);
-	open_pipe(args.fds_thread_to_main);
+	open_pipe(args.fds_main_to_thread,1);
+	open_pipe(args.fds_thread_to_main,2);
 	#endif
 	time_elapsed = 0;
 	pthread_create(&tid, NULL, process_thread, &args);
@@ -401,20 +401,20 @@ int main(int argc, char *argv[]) {
 
 
 
-		per_round_advance = ack_and_get_next_command(fp, ret);
+		per_round_advance = ack_and_get_next_command(fp, ret*1000);
 		if(per_round_advance == -1){
 			// STOPPING EXPERIMENT
 			args.stop = 1;
 			do_debug("MAIN: Instructing Thread: %d to Stop. Time elapsed = %d\n", i , time_elapsed);
-			pipe_send(args.fds_main_to_thread, THREAD_EXITING);
+			pipe_send(args.fds_main_to_thread, THREAD_EXITING,1);
 			break;
 		}
 		else{
 
 		  	if(!args.is_blocked){
 			  	do_debug("MAIN: Instructing Thread: %d to run for %d us. Time elapsed = %d\n", i, per_round_advance, time_elapsed);
-			  	pipe_send(args.fds_main_to_thread, per_round_advance);
-			  	ret = pipe_read(args.fds_thread_to_main);
+			  	pipe_send(args.fds_main_to_thread, per_round_advance,1);
+			  	ret = pipe_read(args.fds_thread_to_main,2);
 			  	if(ret == THREAD_BLOCKED){
 			  		do_debug("MAIN: Detected thread block\n");
 			  		time_elapsed = time_elapsed + per_round_advance;

@@ -25,12 +25,14 @@ import importlib
 import re
 from time import sleep
 import time
+import tempfile
 
 from mininet.net import Mininet
 from mininet.topo import Topo
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info
 from mininet.cli import CLI
+from mininet.node import OVSController
 
 from VT_mininet import VTSwitch, VTHost
 import apptopo
@@ -39,8 +41,10 @@ from timekeeper_functions import *
 import old_tk_functions
 from old_tk_functions import *
 import math
+import numpy as np
 
 import json
+from mininet.node import UserSwitch, OVSKernelSwitch, Controller, OVSBridge
 
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -71,6 +75,17 @@ tdf = args.tdf
 device_id = 0
 n_rounds = args.nrounds
 exp_no = args.exp_no
+
+if operating_mode == "VT" :
+    experiments_dir = experiments_dir + operating_mode + "_" + str(exp_no) + "_TDF_" + str(tdf) + "/"
+else:
+    experiments_dir = experiments_dir + operating_mode + "_" + str(exp_no) + "/"
+
+try:
+    os.stat(experiments_dir)
+except:
+    os.mkdir(experiments_dir) 
+
 
 ENABLE_TIMEKEEPER = 0
 TIMESLICE = 100000 
@@ -150,7 +165,7 @@ def main():
 
 
     if operating_mode == "APP_VT" or operating_mode == "INS_VT" :
-        ret = initializeExp(5);
+        ret = initializeExp(1);
         if ret < 0 :
             print "Initialize Exp Failed!"
             sys.exit(-1)
@@ -182,11 +197,19 @@ def main():
 
     topo = AppTopo(links, latencies, manifest=manifest, target="multiswitch", bws=bws)
     switchClass = configureVTSwitch()
+    #net = Mininet(topo = topo,
+    #              link = TCLink,
+    #              host = VTHost,
+    #              switch = switchClass,
+    #              controller = None,
+    #              autoStaticArp=True)
+
     net = Mininet(topo = topo,
                   link = TCLink,
                   host = VTHost,
-                  switch = switchClass,
-                  controller = None,
+                  #switch=OVSKernelSwitch, controller=Controller,
+                  switch = OVSBridge,
+                  controller=None,
                   autoStaticArp=True)
 
 
@@ -205,6 +228,15 @@ def main():
     return_codes = []
     host_procs = []
     switch_procs = []
+
+    #print "Starting TCP dump ..."
+    #os.system("sudo tcpdump -i s1-eth1 -w /home/vignesh/s1-eth1.pcap  &")
+    #os.system("sudo tcpdump -i s3-eth1 -w /home/vignesh/s3-eth1.pcap  &")
+    #os.system("sudo tcpdump -i s1-eth3 -w /home/vignesh/s1-eth3.pcap  &")
+    #os.system("sudo tcpdump -i s3-eth3 -w /home/vignesh/s3-eth3.pcap  &")
+    #os.system("sudo tcpdump -i s2-eth1 -w /home/vignesh/s2-eth1.pcap  &")
+
+    sleep(2)
 
 
     def _wait_for_exit(p, host):
@@ -226,19 +258,23 @@ def main():
         stdout_filename = os.path.join("/tmp/", h.name + '.log')
         stdout_files[h.name] = open(stdout_filename, 'w')
         #cmd = formatCmd(host['cmd'])
-        cmd_to_run = host['cmd'] + " >> " + stdout_filename + " 2>&1" + " &"
+        cmd_to_run = host['cmd'] + " >> " + stdout_filename #+ " 2>&1" + " &"
         #print "Host: ", h.name, "Running Command: ", cmd_to_run
 
+        with tempfile.NamedTemporaryFile() as f:      
+            h.cmd(cmd_to_run + ' 2>&1 & echo $! >> ' + f.name)
+            pid = int(f.read())
+            host_procs.append((pid, h))
 
-        h.cmd(cmd_to_run)        
-        pid = get_pids_with_cmd(host['cmd'][0:150], expected_no_of_pids=1)[0]
-        host_procs.append((pid, h))
+        #h.cmd(cmd_to_run)        
+        #pid = get_pids_with_cmd(host['cmd'][0:150], expected_no_of_pids=1)[0]
+        #host_procs.append((pid, h))
 
     for i in xrange(1,n_switches + 1) :
         switch_name = "s" + str(i)
         sw = net.get(switch_name)
 
-        sw_pid = sw.cmd_pid
+        sw_pid = sw.pid
         switch_procs.append((sw_pid,sw))
 
     print "HOST Processes :"
@@ -257,13 +293,33 @@ def main():
     if ENABLE_TIMEKEEPER == 0 :
         print "TIMEKEEPER DISABLED. RUNNING EXPERIMENT FOR 60 secs ..."
         exp_stats["start_time"] = time.time()
-        sleep(60)
+        sleep(30)
         exp_stats["end_time"] = time.time()
+        print "Copying files ..."
+        os.system("cp /tmp/*.log " + str(experiments_dir))
+
+        #os.system("cat /tmp/h1.log | grep \"Transmit Time\" | cut -d ' ' -f5 > " + str(experiments_dir) + "delays.txt")
+        #os.system("cat /tmp/h2.log | grep \"Transmit Time\" | cut -d ' ' -f5 >> " + str(experiments_dir) + "delays.txt")
+
+        #a = np.loadtxt(str(experiments_dir) + "delays.txt")
+        #delays = list(a)
+
+        #exp_stats["delays"] = delays
+        #exp_stats["mu_delay"] = np.mean(delays)
+        #exp_stats["std_delay"] = np.std(delays)
+
+
+        stat_file =  "normal_" +  str(exp_no) + ".json" 
+        with open(experiments_dir + stat_file, 'w') as fp:
+            json.dump(exp_stats, fp, sort_keys=True, indent=4)
+
+
     else:
 
         if operating_mode == "VT" :
 
             print "RUNNING in ", operating_mode, " MODE .."
+            print "Dilating Nodes and Switches ..."
             for host_pid, host in host_procs :
                 o_dilate_all(host_pid, tdf)
                 o_addToExp(host_pid)
@@ -272,10 +328,31 @@ def main():
                 o_dilate_all(sw_pid, tdf)
                 o_addToExp(sw_pid)
 
-            o_set_cbe_experiment_timeslice(TIMESLICE*my_tdf)
+            print "Setting experiment timeslice ..."
+            o_set_cbe_experiment_timeslice(TIMESLICE*tdf)
             print "Sychronize and Freeze"
             o_synchronizeAndFreeze()
             sleep(2)
+
+            print "Setting Net dev owners for hosts:"
+            for host_pid, host in host_procs :
+                for name in host.intfNames():
+                    if name != "lo" :
+                        #print name
+                        o_set_netdevice_owner(host_pid,name)
+
+            sleep(1)
+
+            print "Setting Net dev owners for switches: "
+            for sw_pid, sw in switch_procs :
+                for name in sw.intfNames():
+                    if name != "lo" :
+                        #print name
+                        o_set_netdevice_owner(sw_pid,name)
+
+            sleep(1)
+
+            
             print "Starting Experiment"
             o_startExp()
 
@@ -283,13 +360,21 @@ def main():
 
             print "Progress Experiment for ", n_rounds, " Rounds !"
             exp_stats["start_time"] = time.time()
-            o_progress_n_rounds(n_rounds)
+
+            n_progressed_rounds = 0
+            while n_progressed_rounds < n_rounds :
+                o_progress_exp_cbe(1000)
+                n_progressed_rounds += 1000
+                print "N progressed rounds = ", n_progressed_rounds, time.time()
+
+
+            #sleep(10)
             exp_stats["end_time"] = time.time()
 
             stats = o_get_experiment_stats()
 
             if stats[0] < 0 :
-                print "ERROR collecting stats "
+                print "ERROR collecting stats ", stats
             else:
                 exp_stats["total_rounds"] = float(stats[2])
                 exp_stats["total_round_error"] = float(stats[0])
@@ -305,16 +390,33 @@ def main():
                     exp_stats["mu_round_error"] = 0.0
                     exp_stats["std_round_error"] = 0.0
 
+            #os.system("cat /tmp/h1.log | grep \"Transmit Time\" | cut -d ' ' -f5 > " + str(experiments_dir) + "delays.txt")
+            #os.system("cat /tmp/h2.log | grep \"Transmit Time\" | cut -d ' ' -f5 >> " + str(experiments_dir) + "delays.txt")
+
+            #a = np.loadtxt(str(experiments_dir) + "delays.txt")
+            #delays = list(a)
+
+            #exp_stats["delays"] = delays
+            #exp_stats["mu_delay"] = np.mean(delays)
+            #exp_stats["std_delay"] = np.std(delays)
+
             stat_file = operating_mode + "_" + str(exp_no) + ".json" 
             with open(experiments_dir + stat_file, 'w') as fp:
                 json.dump(exp_stats, fp, sort_keys=True, indent=4)
             
+            print "Copying files ..."
+            os.system("cp /tmp/*.log " + str(experiments_dir))
+
+
+
             print "Stopping Experiment"
             o_resume_exp_cbe()
             sleep(2)
             o_stopExp()
             sleep(10)
-            
+            os.system("sudo killall router_n > /dev/null")
+            os.system("sudo killall client_n > /dev/null")
+            os.system("sudo killall server_n > /dev/null")
 
 
 
@@ -338,6 +440,7 @@ def main():
                 for name in host.intfNames():
                     if name != "lo" :
                         #print name
+                        pass
                         set_netdevice_owner(host_pid,name)
 
             sleep(1)
@@ -347,13 +450,22 @@ def main():
                 for name in sw.intfNames():
                     if name != "lo" :
                         #print name
+                        pass
                         set_netdevice_owner(sw_pid,name)
 
             sleep(1)
 
             print "Progress Experiment for ", n_rounds, " Rounds !"
             exp_stats["start_time"] = time.time()
-            progress_n_rounds(n_rounds)
+            #progress_n_rounds(n_rounds)
+            n_progressed_rounds = 0
+            while n_progressed_rounds < n_rounds :
+                progress_n_rounds(1)
+                n_progressed_rounds += 1
+
+                if n_progressed_rounds % 1000 == 0 :
+                    print "N progressed rounds = ", n_progressed_rounds, time.time()
+
             exp_stats["end_time"] = time.time()
 
             print "Copying files ..."
@@ -382,6 +494,17 @@ def main():
                     exp_stats["std_round_error"] = 0.0
 
 
+            os.system("cat /tmp/h1.log | grep \"Transmit Time\" | cut -d ' ' -f5 > " + str(experiments_dir) + "delays.txt")
+            os.system("cat /tmp/h2.log | grep \"Transmit Time\" | cut -d ' ' -f5 >> " + str(experiments_dir) + "delays.txt")
+
+            a = np.loadtxt(str(experiments_dir) + "delays.txt")
+            delays = list(a)
+
+            exp_stats["delays"] = delays
+            exp_stats["mu_delay"] = np.mean(delays)
+            exp_stats["std_delay"] = np.std(delays)
+
+
 
             stat_file = operating_mode + "_" +  str(exp_no) + ".json" 
             with open(experiments_dir + stat_file, 'w') as fp:
@@ -395,7 +518,9 @@ def main():
             print "UNKNOWN MODE: ", operating_mode
 
     print "STOPPING EXPERIMENT ..."
-    net.stop()
+    os.system("sudo chmod -R 777 " + vt_mech_dir)
+    #net.stop()
+    os.system("sudo mn -c")
 
 
 if __name__ == '__main__':

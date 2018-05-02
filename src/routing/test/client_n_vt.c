@@ -29,13 +29,14 @@
 #include <sys/ioctl.h>
 #define _GNU_SOURCE
 #include <sched.h>
+#include <semaphore.h>
 
 #define TK_IOC_MAGIC  'k'
 
 #define TK_IO_GET_STATS _IOW(TK_IOC_MAGIC,  1, int)
 #define TK_IO_WRITE_RESULTS _IOW(TK_IOC_MAGIC,  2, int)
 
-#define BUF_SIZE 20000
+#define BUF_SIZE 1000
 #define DEBUG
 #define IP_ADDR_SIZE 100
 #define SUCCESS 1
@@ -46,15 +47,24 @@
 #define THREAD_EXITING -2
 #define BUFSIZE 2000  
 
-int SENDTO_US = 50;
-int FLUSH_BUFFER_US = 50;
-int COMPUTATION_US = 50;
+int SENDTO_US = 20;
+int FLUSH_BUFFER_US = 13;
+int COMPUTATION_US = 86;
+
+
+
 
 
 
 hashmap func_times_us;
 
-void open_pipe(int * fd){
+
+
+sem_t buf_mutex_1,empty_count_1,fill_count_1;
+sem_t buf_mutex_2,empty_count_2,fill_count_2;
+
+
+void open_pipe(int * fd, int id){
   int result = pipe(fd);
   if (result < 0){
         perror("pipe ");
@@ -63,15 +73,58 @@ void open_pipe(int * fd){
         exit(1);
    }
 
+   if(id == 1){
+    sem_init(&buf_mutex_1,0,1);
+    sem_init(&fill_count_1,0,0);
+    sem_init(&empty_count_1,0,1);
+   }
+   else{
+    sem_init(&buf_mutex_2,0,1);
+    sem_init(&fill_count_2,0,0);
+    sem_init(&empty_count_2,0,1);
+   }
+
 }
 
-void pipe_send(int * fd, int msg){
+void pipe_send(int * fd, int msg, int id){
 
 
   char msg_buf[BUFSIZE];
   flush_buffer(msg_buf, BUFSIZE);
   sprintf(msg_buf,"%d", msg);
-  int ret = write(fd[1], msg_buf, strlen(msg_buf));
+  int ret;
+
+  if(id == 1){
+    sem_wait(&empty_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+
+    sem_wait(&empty_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
+  fcntl(fd[1], F_SETFL, O_NONBLOCK);
+  //do_debug("Pipe sending message: %s\n", msg_buf);
+  while(1){
+    ret = write(fd[1], msg_buf, strlen(msg_buf));
+    if(ret){
+      break;
+    }
+
+  }
+  //do_debug("Pipe sent message: %s\n", msg_buf);
+
+  if(id == 1){
+
+    sem_post(&buf_mutex_1);
+    sem_post(&fill_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&fill_count_2);
+  }
+
   if(ret != strlen(msg_buf)){
     perror("Write error\n");
     do_debug("Pipe send error\n");
@@ -81,10 +134,30 @@ void pipe_send(int * fd, int msg){
 }
 
 
-int  pipe_read(int *fd) {
+int  pipe_read(int *fd, int id) {
   char buf[BUFSIZE];
   flush_buffer(buf, BUFSIZE);
+  //do_debug("Pipe read: Waiting for next msg\n");
+  if(id == 1){
+    sem_wait(&fill_count_1);
+    sem_wait(&buf_mutex_1);
+  }
+  else{
+    sem_wait(&fill_count_2);
+    sem_wait(&buf_mutex_2);
+  }
+
   int ret = read(fd[0], buf, BUFSIZE);
+
+  if(id == 1){
+    sem_post(&buf_mutex_1);
+    sem_post(&empty_count_1);
+  }
+  else{
+    sem_post(&buf_mutex_2);
+    sem_post(&empty_count_2);
+  }
+
 
   if(ret < 0){
       do_debug("Pipe read error\n");
@@ -92,9 +165,10 @@ int  pipe_read(int *fd) {
       exit(-1);
   }
 
+  //do_debug("Pipe read: received msg: %s\n", buf);
+
   return atoi(buf);
 }
-
 
 
 typedef struct thread_aruments {
@@ -157,7 +231,7 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
     *curr_round_time_left = 0;
     //pipe_send(thread_to_main_fds, THREAD_READY);
     do_debug("THREAD. Waiting for first cmd\n");
-    *curr_round_time_left = pipe_read(main_to_thread_fds);
+    *curr_round_time_left = pipe_read(main_to_thread_fds,1);
     do_debug("THREAD. Got first cmd: %d\n", *curr_round_time_left);
     if(*curr_round_time_left < 0)
       return THREAD_EXITING;
@@ -172,19 +246,21 @@ int update_stub(int * curr_round_time_left, int *thread_to_main_fds, int * main_
   int * time_elapsed = (int *)hmap_get_abs(&func_times_us, abs(str_hash(last_fn)));
   *curr_round_time_left = *curr_round_time_left - *time_elapsed;
 
-  do_debug("THREAD. Updating curr_round_time_left: %d, last_fn = %s\n", *curr_round_time_left, last_fn);
+  //do_debug("THREAD. Updating curr_round_time_left: %d, last_fn = %s\n", *curr_round_time_left, last_fn);
 
   if(*curr_round_time_left <= 0){
 
       do_debug("THREAD. Finishing round\n");
-      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left));
-      *curr_round_time_left = pipe_read(main_to_thread_fds);
+      pipe_send(thread_to_main_fds, -1* (*curr_round_time_left),2);
+      *curr_round_time_left = pipe_read(main_to_thread_fds,1);
 
       if(*curr_round_time_left <= 0)
         return THREAD_EXITING;
 
       return SUCCESS;
   }
+
+  return SUCCESS;
 
 }
 
@@ -231,6 +307,9 @@ void process_thread(void * args){
   int exp_curr_round_time_us = 0;
   int ret = 0;
 
+  long start;
+  long stop;
+
 
   sock = socket(AF_INET, SOCK_DGRAM, 0);
   if (sock < 0) {
@@ -257,7 +336,7 @@ void process_thread(void * args){
   //blocking recvfrom. need to notify main thread about going to block through pipe.
   arg->is_blocked = 1;
   exp_curr_round_time_us = 0;
-  pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
+  pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED,2);
   
 
   usleep(1000000);
@@ -265,7 +344,7 @@ void process_thread(void * args){
   
   //blocking recvfrom. need to notify main thread about resume after blocking
   arg->is_blocked = 0;
-  exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread);
+  exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread,1);
   if(exp_curr_round_time_us <= 0 || arg->stop){
     finish_thread(&sock);
   }
@@ -283,6 +362,8 @@ void process_thread(void * args){
       
     }
 
+    
+
     flush_buffer(buffer, BUF_SIZE);
     sprintf(buffer,"REQUEST: %d", pkt_no + 1);
 
@@ -296,8 +377,11 @@ void process_thread(void * args){
     struct timeval SendTimeStamp;
     struct timeval RecvTimeStamp;
 
+    pkt_no ++;
     
     gettimeofday(&SendTimeStamp, NULL);
+
+    //if(pkt_no % 100 == 0)
     do_debug("Sending REQUEST no %d\n", pkt_no + 1);
 
     /*Send message to server*/
@@ -311,7 +395,7 @@ void process_thread(void * args){
 
 
     flush_buffer(buffer, BUF_SIZE);
-    do_debug("Sent REQUEST no %d, sock = %d\n", pkt_no + 1, sock);
+    //do_debug("Sent REQUEST no %d, sock = %d\n", pkt_no + 1, sock);
 
     if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "flush_buffer" ) < 0 || arg->stop){
         finish_thread(&sock);
@@ -319,19 +403,19 @@ void process_thread(void * args){
 
     arg->is_blocked = 1;
     exp_curr_round_time_us = 0;
-    pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED);
+    pipe_send(arg->fds_thread_to_main, THREAD_BLOCKED,2);
 
 
 
     /*Receive message from server*/
     nBytes = recvfrom(sock,buffer,BUF_SIZE,0,((struct sockaddr *)&serverAddr), &addr_size);
     arg->is_blocked = 0;
-    exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread);
+    exp_curr_round_time_us = pipe_read(arg->fds_main_to_thread,1);
     if(exp_curr_round_time_us <= 0 || arg->stop){
       finish_thread(&sock);
     }
 
-    do_debug("Received from server: %d bytes\n",nBytes);
+    //do_debug("Received from server: %d bytes\n",nBytes);
 
 
 
@@ -346,7 +430,7 @@ void process_thread(void * args){
 
         //do_debug("Received from server: %s bytes\n",nBytes);
 
-        pkt_no ++;
+        
 
 
         double transit_time = (float)(RecvTS - SendTS)/(float)1000000.0; 
@@ -363,11 +447,15 @@ void process_thread(void * args){
           stdev = sqrt(stdev);
         }
 
+        //if(pkt_no % 100 == 0){
+        do_debug("Transmit Time (sec) : %f\n", transit_time);
         do_debug("Start Time (sec) : %lu, Recv Time: %lu\n", StartTS, RecvTS);
         do_debug("Avg delay (sec) : %f\n", avg_transmit_time/pkt_no);
         do_debug("Std delay (sec) : %f\n", stdev);
         do_debug("Avg throughput : %f (Mbps), nBytes_received: %f\n", avg_recv_rate, nBytes_received);
         do_debug("#####################################################\n"); 
+
+        //}
 
 
         if(update_stub(&exp_curr_round_time_us, arg->fds_thread_to_main, arg->fds_main_to_thread, "computation" ) < 0 || arg->stop){
@@ -471,13 +559,13 @@ int get_time_to_advance(int fp){
   u32 n_insns;
   int read_ret = -1;
 
-  do_debug("Waiting for nxt cmd ...\n");
+  //do_debug("Waiting for nxt cmd ...\n");
   while(read_ret == -1){
     read_ret = read(fp, nxt_cmd,fp);
     usleep(10000);
   }
 
-  do_debug("Received Command: %s\n", nxt_cmd);
+  //do_debug("Received Command: %s\n", nxt_cmd);
   while(tail_ptr != -1){
     tail_ptr = get_next_command_tuple(nxt_cmd, tail_ptr, &new_cmd_pid, &n_insns);
 
@@ -486,7 +574,7 @@ int get_time_to_advance(int fp){
       return -1;
     }
 
-    do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
+    //do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
 
     if(new_cmd_pid == 0)
           break;
@@ -499,7 +587,7 @@ int get_time_to_advance(int fp){
   if(per_round_advance < 0)
     return 100;
 
-  do_debug("Advancing by: %d\n", per_round_advance);
+  //do_debug("Advancing by: %d\n", per_round_advance);
   return per_round_advance;
 
 }
@@ -560,7 +648,7 @@ int create_spinner_task(pid_t * child_pid) {
 int ack_and_get_next_command(int fp, int advance_err){
 
 
-  do_debug("Writing results back \n");
+  //do_debug("Writing results back \n");
   char nxt_cmd[MAX_BUF_SIZ];
   char * ptr;
   int ret = 0;
@@ -575,7 +663,7 @@ int ack_and_get_next_command(int fp, int advance_err){
   ret = ioctl(fp,TK_IO_WRITE_RESULTS, nxt_cmd);
   if(ret == 0){
 
-    do_debug("Received Command: %s\n", nxt_cmd);
+    //do_debug("Received Command: %s\n", nxt_cmd);
     while(tail_ptr != -1){
       tail_ptr = get_next_command_tuple(nxt_cmd, tail_ptr, &new_cmd_pid, &n_insns);
 
@@ -584,13 +672,13 @@ int ack_and_get_next_command(int fp, int advance_err){
         return -1;
       }
 
-      do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
+      //do_debug("Received Command n_insns: %d, tail_ptr: %d, new_cmd_pid=%d\n", n_insns, tail_ptr, new_cmd_pid);
 
       if(new_cmd_pid == 0)
         break;
 
       per_round_advance = (int) n_insns/1000;
-      do_debug("Advancing by: %d, n_insns = %d\n", per_round_advance, n_insns);
+      //do_debug("Advancing by: %d, n_insns = %d\n", per_round_advance, n_insns);
 
       
     }
@@ -654,8 +742,8 @@ int main(int argc, char * argv[]){
   args.stop = 0;
   do_debug("Starting Thread\n");
   do_debug("Starting Thread. Opening pipes\n");
-  open_pipe(args.fds_main_to_thread);
-  open_pipe(args.fds_thread_to_main);
+  open_pipe(args.fds_main_to_thread,1);
+  open_pipe(args.fds_thread_to_main,2);
   time_elapsed = 0;
   pthread_create(&tid, NULL, process_thread, &args);
   
@@ -679,28 +767,28 @@ int main(int argc, char * argv[]){
   while(1){
 
       //do_debug("Getting next command:\n");
-      per_round_advance = ack_and_get_next_command(fp,ret);
+      per_round_advance = ack_and_get_next_command(fp,ret*1000);
       if(per_round_advance == -1){
         // STOPPING EXPERIMENT
         args.stop = 1;
         do_debug("MAIN: Instructing Thread to Stop. Time elapsed = %d\n",time_elapsed);
-        pipe_send(args.fds_main_to_thread, THREAD_EXITING);
+        pipe_send(args.fds_main_to_thread, THREAD_EXITING,1);
         break;
       }
       else{
 
           if(!args.is_blocked){
-            do_debug("MAIN: Instructing Thread to run for %d us. Time elapsed = %d\n",per_round_advance, time_elapsed);
-            pipe_send(args.fds_main_to_thread, per_round_advance);
-            ret = pipe_read(args.fds_thread_to_main);
+            //do_debug("MAIN: Instructing Thread to run for %d us. Time elapsed = %d\n",per_round_advance, time_elapsed);
+            pipe_send(args.fds_main_to_thread, per_round_advance,1);
+            ret = pipe_read(args.fds_thread_to_main,2);
             if(ret == THREAD_BLOCKED){
-              do_debug("MAIN: Detected thread block\n");
+              //do_debug("MAIN: Detected thread block\n");
               time_elapsed = time_elapsed + per_round_advance;
               //write_results(fp,0);
               ret = 0;
             }
             else if(ret >= 0){
-              do_debug("MAIN: Return = %d\n", ret);
+              //do_debug("MAIN: Return = %d\n", ret);
               time_elapsed = time_elapsed + ret + per_round_advance;
               //write_results(fp,ret*1000);
               //write_results(fp,0);
@@ -713,7 +801,7 @@ int main(int argc, char * argv[]){
           }
           else{
             // if still blocked
-            do_debug("MAIN. Thread Still Blocked\n");
+            //do_debug("MAIN. Thread Still Blocked\n");
             time_elapsed += per_round_advance;
             usleep(per_round_advance);
             //write_results(fp,0);
